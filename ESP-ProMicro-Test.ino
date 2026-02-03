@@ -10,11 +10,20 @@
 #define LONG_PRESS_MS 500
 #define TIMEOUT_MS 3000
 
+// Brute-Force-Schutz
+#define MAX_FAILED_ATTEMPTS 5
+#define LOCKOUT_MS 30000  // 30 Sekunden Sperre
+
 // State
 int currentSequenceIndex = 0;
 unsigned long pressStart = 0;
 unsigned long lastAction = 0;
 bool buttonWasPressed = false;
+
+// Brute-Force State
+int failedAttempts = 0;
+unsigned long lockoutStart = 0;
+bool isLockedOut = false;
 
 // Buffer für aktuelle Eingabe-Sequenz
 byte currentInput[20];  // Max 20 Tasten für längste Sequenz
@@ -33,6 +42,16 @@ void blinkFail() {
   digitalWrite(LED_PIN, HIGH);
   delay(2000);
   digitalWrite(LED_PIN, LOW);
+}
+
+void blinkLockout() {
+  // Schnelles Blinken zeigt Lockout an
+  for (int i = 0; i < 10; i++) {
+    digitalWrite(LED_PIN, HIGH);
+    delay(50);
+    digitalWrite(LED_PIN, LOW);
+    delay(50);
+  }
 }
 
 // ==================== Sequenz-Matching ====================
@@ -95,8 +114,21 @@ void executePassword(int entryIndex) {
   PasswordEntry entry;
   memcpy_P(&entry, &PASSWORD_ENTRIES[entryIndex], sizeof(PasswordEntry));
 
-  // Passwort direkt senden (String liegt im RAM, nicht PROGMEM)
-  Keyboard.print(entry.password);
+  // XOR-Dekodierung des Passworts
+  char buffer[64];
+  int len = min(entry.password_len, (int)sizeof(buffer) - 1);
+
+  for (int i = 0; i < len; i++) {
+    byte encoded = pgm_read_byte(&entry.password[i]);
+    buffer[i] = encoded ^ XOR_KEY;
+  }
+  buffer[len] = '\0';
+
+  // Passwort senden
+  Keyboard.print(buffer);
+
+  // Sicherheit: Buffer sofort löschen
+  memset(buffer, 0, sizeof(buffer));
 }
 
 /**
@@ -120,9 +152,13 @@ void processButtonPress(int pressType) {
     // Match gefunden!
     executePassword(matchIndex);
     blinkSuccess(4);
-    
+
+    // Reset Brute-Force-Counter bei Erfolg
+    failedAttempts = 0;
+
     // Reset für nächste Sequenz
     currentSequenceIndex = 0;
+    memset(currentInput, 0, sizeof(currentInput));
     return;
   }
 
@@ -157,8 +193,19 @@ void processButtonPress(int pressType) {
 
   if (!couldMatch) {
     // Diese Eingabe kann zu keiner gültigen Kombination führen
-    blinkFail();
+    failedAttempts++;
+
+    if (failedAttempts >= MAX_FAILED_ATTEMPTS) {
+      // Lockout aktivieren
+      isLockedOut = true;
+      lockoutStart = millis();
+      blinkLockout();
+    } else {
+      blinkFail();
+    }
+
     currentSequenceIndex = 0;
+    memset(currentInput, 0, sizeof(currentInput));
   }
 }
 
@@ -178,10 +225,25 @@ void loop() {
   bool buttonPressed = (digitalRead(BUTTON_PIN) == LOW);
   unsigned long now = millis();
 
+  // Lockout-Prüfung
+  if (isLockedOut) {
+    if ((now - lockoutStart) >= LOCKOUT_MS) {
+      // Lockout beenden
+      isLockedOut = false;
+      failedAttempts = 0;
+      blinkSuccess(2);  // Kurzes Signal: wieder bereit
+    } else {
+      // Noch gesperrt - ignoriere Eingaben
+      delay(10);
+      return;
+    }
+  }
+
   // Timeout: zu lange keine Eingabe -> Reset
   if (currentSequenceIndex > 0 && (now - lastAction) > TIMEOUT_MS) {
     blinkFail();
     currentSequenceIndex = 0;
+    memset(currentInput, 0, sizeof(currentInput));
   }
 
   // Button gerade gedrückt
