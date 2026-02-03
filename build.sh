@@ -14,6 +14,15 @@ echo "Sketch: $SKETCH_DIR"
 echo "Port: $PORT"
 echo ""
 
+# Generiere embedded_password.h aus .env
+echo "Generiere Passwort-Header aus .env..."
+python3 "$SKETCH_DIR/generate_password_header.py"
+if [ $? -ne 0 ]; then
+    echo "Fehler beim Generieren der Passwort-Header-Datei!"
+    exit 1
+fi
+echo ""
+
 # Board Cores installieren falls nötig
 if ! $ARDUINO_CLI core list | grep -q "arduino:avr"; then
     echo "Installiere Arduino AVR Core..."
@@ -44,6 +53,17 @@ elif [ -n "$FOUND_INO" ]; then
 else
     echo "Keine .ino-Datei im Verzeichnis gefunden. Abbruch."
     exit 1
+fi
+
+# Stelle sicher, dass generierte Header im Build-Verzeichnis liegen
+if [ -f "$SKETCH_DIR/embedded_passwords.h" ]; then
+    echo "Kopiere embedded_passwords.h nach $BUILD_DIR"
+    cp "$SKETCH_DIR/embedded_passwords.h" "$BUILD_DIR/"
+fi
+
+if [ -f "$SKETCH_DIR/embedded_password.h" ]; then
+    echo "Kopiere embedded_password.h nach $BUILD_DIR (Compat)"
+    cp "$SKETCH_DIR/embedded_password.h" "$BUILD_DIR/"
 fi
 
 $ARDUINO_CLI compile -v --fqbn "$BOARD" "$BUILD_DIR"
