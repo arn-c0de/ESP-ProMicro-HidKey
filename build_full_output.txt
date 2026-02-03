@@ -1,0 +1,82 @@
+[0;34m╔══════════════════════════════════════════════════════╗[0m
+[0;34m║  Secure HID Pro Micro - Build System (Arduino CLI)  ║[0m
+[0;34m║  Device Signature Encryption + Secure Cleanup       ║[0m
+[0;34m╚══════════════════════════════════════════════════════╝[0m
+
+[1;33m[1/9] Checking for .env file...[0m
+[0;32m✓ .env found[0m
+[1;33m[2/9] Verifying Arduino CLI installation...[0m
+[0;32m✓ Arduino CLI found: arduino-cli  Version: 1.4.1 Commit: e39419312 Date: 2026-01-19T16:13:12Z[0m
+[1;33m[3/9] Checking SparkFun AVR board support...[0m
+[1;33mInstalling SparkFun AVR core...[0m
+Downloading index: package_index.tar.bz2 0 B / 92.53 KiB [-----------------------------------------]   0.00%Downloading index: package_index.tar.bz2 downloaded                                                         
+Downloading index: package_sparkfun_index.json 0 B / 90.52 KiB [-----------------------------------]   0.00%Downloading index: package_sparkfun_index.json downloaded                                                   
+Platform SparkFun:avr@1.1.13 already installed
+[0;32m✓ SparkFun AVR core ready[0m
+[1;33m[4/9] Checking Arduino libraries...[0m
+[0;32m✓ Required libraries available[0m
+[1;33m[5/9] Preparing build environment...[0m
+[0;32m✓ Build temp: /media/arn/2D2C4EC565EC4617/ProjectsGithub/ESP-promicro-hidkey/build_temp[0m
+[1;33m[6/9] Encrypting secrets (compile-time AES)...[0m
+[1;33m[VENV] Installing dependencies inside virtualenv...[0m
+Requirement already satisfied: pip in ./.venv/lib/python3.12/site-packages (26.0)
+Requirement already satisfied: setuptools in ./.venv/lib/python3.12/site-packages (80.10.2)
+Requirement already satisfied: wheel in ./.venv/lib/python3.12/site-packages (0.46.3)
+Requirement already satisfied: packaging>=24.0 in ./.venv/lib/python3.12/site-packages (from wheel) (26.0)
+Requirement already satisfied: pycryptodome in ./.venv/lib/python3.12/site-packages (3.23.0)
+
+======================================================================
+Secure HID Pro Micro - Compile-Time Encryption
+======================================================================
+Input:  /media/arn/2D2C4EC565EC4617/ProjectsGithub/ESP-promicro-hidkey/.env
+Output: /media/arn/2D2C4EC565EC4617/ProjectsGithub/ESP-promicro-hidkey/build_temp/secrets.h
+======================================================================
+
+
+======================================================================
+✓ Encryption successful!
+======================================================================
+Output:       /media/arn/2D2C4EC565EC4617/ProjectsGithub/ESP-promicro-hidkey/build_temp/secrets.h
+Salt:         ProMicro2026SaltConstant
+Secret 1:     48 bytes encrypted
+Secret 2:     48 bytes encrypted
+Fake PW:      48 bytes encrypted
+======================================================================
+Security notes:
+  • All data is AES-128-CBC encrypted
+  • IVs are randomized (unique per build)
+  • Decryption requires device signature
+  • Plaintext never stored in binary
+======================================================================
+
+[0;32m✓ Secrets encrypted and header generated[0m
+[1;33m[7/9] Compiling firmware...[0m
+Sketch uses 10574 bytes (36%) of program storage space. Maximum is 28672 bytes.
+Global variables use 725 bytes (28%) of dynamic memory, leaving 1835 bytes for local variables. Maximum is 2560 bytes.
+[0;32m✓ Compilation successful[0m
+[0;34m   Firmware: /media/arn/2D2C4EC565EC4617/ProjectsGithub/ESP-promicro-hidkey/firmware.hex[0m
+[1;33m[8/9] Verifying binary security...[0m
+[0;32m✓ No plaintext passwords in binary[0m
+[0;34m   Firmware size: 29767 bytes[0m
+[1;33m[9/9] Cleanup - removing generated artifacts; .env preserved[0m
+[1;33m[9/9] .env file preserved. Edit or truncate it manually to remove secrets if desired.[0m
+[0;32m✓ Build artifacts cleaned[0m
+
+[0;32m╔══════════════════════════════════════════════════════╗[0m
+[0;32m║           BUILD SUCCESSFUL - READY TO FLASH          ║[0m
+[0;32m╚══════════════════════════════════════════════════════╝[0m
+
+[0;34mNext steps:[0m
+  1. [1;33m./upload.sh[0m - Flash firmware to Pro Micro
+  2. Device will be securely wiped before flashing
+  3. All previous data will be erased
+
+[0;34mSecurity status:[0m
+  ✓ Secrets encrypted with AES-128
+  ✓ .env preserved (left intact for manual editing)
+  ✓ Only firmware.hex and .env remain (safe to share firmware only)
+  ✓ Device-unique decryption key
+
+[1;33mNote: .env was preserved. Edit or truncate it manually to remove secrets if desired.[0m
+[1;33mIf you want a fresh .env, copy .env.template or empty the existing file.[0m
+

@@ -1,0 +1,11 @@
+[0;34m╔══════════════════════════════════════════════════════╗[0m
+[0;34m║  Secure HID Pro Micro - Build System (Arduino CLI)  ║[0m
+[0;34m║  Device Signature Encryption + Secure Cleanup       ║[0m
+[0;34m╚══════════════════════════════════════════════════════╝[0m
+
+[1;33m[1/9] Checking for .env file...[0m
+[0;31m[ERROR] .env file not found![0m
+[1;33mAction required:[0m
+  1. cp .env.template .env
+  2. Edit .env with your actual passwords
+  3. Run this script again
