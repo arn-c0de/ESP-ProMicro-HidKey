@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Build und Flash Script für Pro Micro Leonardo
+# Build and Flash Script for Pro Micro Leonardo
 # Board: SparkFun Pro Micro (ATmega32U4, 5V/16MHz)
 
 # Use system arduino-cli if available, otherwise fall back to a local bin/arduino-cli
@@ -14,62 +14,62 @@ echo "Sketch: $SKETCH_DIR"
 echo "Port: $PORT"
 echo ""
 
-# Generiere embedded_password.h aus .env
-echo "Generiere Passwort-Header aus .env..."
+# Generate embedded_password.h from .env
+echo "Generating password header from .env..."
 python3 "$SKETCH_DIR/generate_password_header.py"
 if [ $? -ne 0 ]; then
-    echo "Fehler beim Generieren der Passwort-Header-Datei!"
+    echo "Error generating password header file!"
     exit 1
 fi
 echo ""
 
-# Board Cores installieren falls nötig
+# Install board cores if needed
 if ! $ARDUINO_CLI core list | grep -q "arduino:avr"; then
-    echo "Installiere Arduino AVR Core..."
+    echo "Installing Arduino AVR Core..."
     $ARDUINO_CLI core install arduino:avr
 fi
 
 if ! $ARDUINO_CLI core list | grep -q "SparkFun:avr"; then
-    echo "Installiere SparkFun AVR Core..."
+    echo "Installing SparkFun AVR Core..."
     $ARDUINO_CLI core install SparkFun:avr --additional-urls https://raw.githubusercontent.com/sparkfun/Arduino_Boards/main/IDE_Board_Manager/package_sparkfun_index.json
 fi
 
-# Kompilieren
-# Suche nach .ino-Dateien im Sketch-Verzeichnis
+# Compile
+# Search for .ino files in sketch directory
 FOUND_INO="$(find "$SKETCH_DIR" -maxdepth 1 -name '*.ino' | head -n1)"
 SKETCH_BASENAME="$(basename "$SKETCH_DIR")"
 EXPECTED_SKETCH="$SKETCH_DIR/$SKETCH_BASENAME.ino"
 TEMP_CREATED=0
 
 if [ -f "$EXPECTED_SKETCH" ]; then
-    echo "Gefundener Hauptsketch: $EXPECTED_SKETCH"
+    echo "Found main sketch: $EXPECTED_SKETCH"
     BUILD_DIR="$SKETCH_DIR"
 elif [ -n "$FOUND_INO" ]; then
-    echo "Erstelle temporäres Build-Verzeichnis und kopiere $FOUND_INO als $SKETCH_BASENAME.ino"
+    echo "Creating temporary build directory and copying $FOUND_INO as $SKETCH_BASENAME.ino"
     BUILD_DIR="$(mktemp -d)"
     TMP_BASE="$(basename "$BUILD_DIR")"
     cp "$FOUND_INO" "$BUILD_DIR/$TMP_BASE.ino"
     TEMP_CREATED=1
 else
-    echo "Keine .ino-Datei im Verzeichnis gefunden. Abbruch."
+    echo "No .ino file found in directory. Aborting."
     exit 1
 fi
 
-# Stelle sicher, dass generierte Header im Build-Verzeichnis liegen
+# Ensure generated headers are in build directory
 if [ -f "$SKETCH_DIR/embedded_passwords.h" ]; then
-    echo "Kopiere embedded_passwords.h nach $BUILD_DIR"
+    echo "Copying embedded_passwords.h to $BUILD_DIR"
     cp "$SKETCH_DIR/embedded_passwords.h" "$BUILD_DIR/"
 fi
 
 if [ -f "$SKETCH_DIR/embedded_password.h" ]; then
-    echo "Kopiere embedded_password.h nach $BUILD_DIR (Compat)"
+    echo "Copying embedded_password.h to $BUILD_DIR (Compat)"
     cp "$SKETCH_DIR/embedded_password.h" "$BUILD_DIR/"
 fi
 
 $ARDUINO_CLI compile -v --fqbn "$BOARD" "$BUILD_DIR"
 
 if [ $? -ne 0 ]; then
-    echo "Kompilierung fehlgeschlagen!"
+    echo "Compilation failed!"
     # cleanup temp dir if created
     if [ "$TEMP_CREATED" -eq 1 ]; then
         rm -rf "$BUILD_DIR"
@@ -78,12 +78,12 @@ if [ $? -ne 0 ]; then
 fi
 
 echo ""
-echo "Kompilierung erfolgreich!"
+echo "Compilation successful!"
 echo ""
 
-# Flashen
-echo "Flashe auf $PORT..."
-echo "(Falls nötig: Reset-Taste am Pro Micro drücken)"
+# Flash
+echo "Flashing to $PORT..."
+echo "(If needed: Press reset button on Pro Micro)"
 $ARDUINO_CLI upload -v -p "$PORT" --fqbn "$BOARD" "$BUILD_DIR"
 UPLOAD_EXIT=$?
 
@@ -94,11 +94,11 @@ fi
 
 if [ $UPLOAD_EXIT -eq 0 ]; then
     echo ""
-    echo "Upload erfolgreich! LED sollte jetzt leuchten."
+    echo "Upload successful! LED should now be lit."
 else
     echo ""
-    echo "Upload fehlgeschlagen. Versuche:"
-    echo "  1. Reset-Taste drücken und sofort Script starten"
-    echo "  2. Anderen Port angeben: ./build.sh /dev/ttyACM1"
-    echo "  3. Seriellen Port-Zugriff prüfen (z.B. Benutzer zur 'dialout' Gruppe hinzufügen)"
+    echo "Upload failed. Try:"
+    echo "  1. Press reset button and immediately start script"
+    echo "  2. Specify different port: ./build.sh /dev/ttyACM1"
+    echo "  3. Check serial port access (e.g., add user to 'dialout' group)"
 fi

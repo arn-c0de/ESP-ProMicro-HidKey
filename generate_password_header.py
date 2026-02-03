@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Generiert embedded_password.h aus .env Datei
-Liest mehrere Kombinationen aus .env und erstellt C-Header mit Structs
+Generates embedded_password.h from .env file
+Reads multiple combinations from .env and creates C header with structs
 Format:
   COMBINATION_COUNT=3
   COMBINATION_0_SEQUENCE="0,0,1,0"
-  COMBINATION_0_PASSWORD="passwort1"
+  COMBINATION_0_PASSWORD="password1"
   etc.
 """
 
@@ -13,11 +13,13 @@ import os
 import sys
 from pathlib import Path
 
+MAX_SEQUENCE_LENGTH = 20
+
 def load_env(env_path):
-    """Liest .env Datei und gibt Dictionary zurück"""
+    """Reads .env file and returns dictionary"""
     env_vars = {}
     if not env_path.exists():
-        print(f"Fehler: {env_path} nicht gefunden!", file=sys.stderr)
+        print(f"Error: {env_path} not found!", file=sys.stderr)
         sys.exit(1)
     
     with open(env_path, 'r') as f:
@@ -25,22 +27,22 @@ def load_env(env_path):
             line = line.strip()
             if line and not line.startswith('#') and '=' in line:
                 key, value = line.split('=', 1)
-                # Entferne Anführungszeichen
+                # Remove quotation marks
                 value = value.strip().strip('"').strip("'")
                 env_vars[key.strip()] = value
     
     return env_vars
 
 def parse_combinations(env_vars):
-    """Extrahiert Kombinationen aus env_vars"""
+    """Extracts combinations from env_vars"""
     try:
         count = int(env_vars.get('COMBINATION_COUNT', '0'))
     except ValueError:
-        print("Fehler: COMBINATION_COUNT ist keine Zahl!", file=sys.stderr)
+        print("Error: COMBINATION_COUNT is not a number!", file=sys.stderr)
         sys.exit(1)
     
     if count <= 0:
-        print("Fehler: COMBINATION_COUNT muss > 0 sein!", file=sys.stderr)
+        print("Error: COMBINATION_COUNT must be > 0!", file=sys.stderr)
         sys.exit(1)
     
     combinations = []
@@ -49,24 +51,26 @@ def parse_combinations(env_vars):
         pwd_key = f'COMBINATION_{i}_PASSWORD'
         
         if seq_key not in env_vars:
-            print(f"Fehler: {seq_key} nicht gefunden!", file=sys.stderr)
+            print(f"Error: {seq_key} not found!", file=sys.stderr)
             sys.exit(1)
         if pwd_key not in env_vars:
-            print(f"Fehler: {pwd_key} nicht gefunden!", file=sys.stderr)
+            print(f"Error: {pwd_key} not found!", file=sys.stderr)
             sys.exit(1)
         
         seq_str = env_vars[seq_key]
         password = env_vars[pwd_key]
         
-        # Parse Sequenz (komma-getrennte 0er und 1er)
+        # Parse sequence (comma-separated 0s and 1s)
         try:
             sequence = [int(x.strip()) for x in seq_str.split(',')]
             if not all(s in [0, 1] for s in sequence):
-                raise ValueError("Sequenz darf nur 0 und 1 enthalten")
+                raise ValueError("Sequence may only contain 0 and 1")
             if len(sequence) == 0:
-                raise ValueError("Sequenz darf nicht leer sein")
+                raise ValueError("Sequence cannot be empty")
+            if len(sequence) > MAX_SEQUENCE_LENGTH:
+                raise ValueError(f"Sequence too long (max {MAX_SEQUENCE_LENGTH}, got {len(sequence)})")
         except ValueError as e:
-            print(f"Fehler in {seq_key}: {e}", file=sys.stderr)
+            print(f"Error in {seq_key}: {e}", file=sys.stderr)
             sys.exit(1)
         
         combinations.append({
@@ -78,20 +82,20 @@ def parse_combinations(env_vars):
     return combinations
 
 def generate_c_sequence_array(sequence, index):
-    """Generiert C-Array für eine Sequenz"""
+    """Generates C array for a sequence"""
     seq_array = ", ".join(str(s) for s in sequence)
     return f"  {{{seq_array}}}"
 
 def xor_encode(password, key=0x5A):
-    """XOR-Obfuskierung für Passwort"""
+    """XOR obfuscation for password"""
     return [ord(c) ^ key for c in password]
 
 def generate_header(combinations, output_path):
-    """Generiert embedded_passwords.h mit XOR-obfuskierten Passwörtern"""
+    """Generates embedded_passwords.h with XOR-obfuscated passwords"""
 
-    xor_key = 0x5A  # XOR-Key für Obfuskierung
+    xor_key = 0x5A  # XOR key for obfuscation
 
-    # Sequenz-Arrays und Passwort-Arrays generieren
+    # Generate sequence arrays and password arrays
     sequence_definitions = []
     password_definitions = []
     sequence_references = []
@@ -148,24 +152,24 @@ const PasswordEntry PASSWORD_ENTRIES[] PROGMEM = {{
     with open(output_path, 'w') as f:
         f.write(header_content)
     
-    print(f"Header-Datei erstellt: {output_path}")
-    print(f"Kombinationen generiert: {len(combinations)}")
+    print(f"Header file created: {output_path}")
+    print(f"Combinations generated: {len(combinations)}")
     for comb in combinations:
         seq_str = ", ".join(str(s) for s in comb['sequence'])
-        print(f"  [{comb['index']}] Sequenz: {seq_str} -> '{comb['password']}'")
+        print(f"  [{comb['index']}] Sequence: {seq_str} -> '{comb['password']}'")
 
 def main():
     script_dir = Path(__file__).parent
     env_path = script_dir / '.env'
     output_path = script_dir / 'embedded_passwords.h'
 
-    # Lade .env
+    # Load .env
     env_vars = load_env(env_path)
 
-    # Extrahiere Kombinationen
+    # Extract combinations
     combinations = parse_combinations(env_vars)
 
-    # Generiere Header
+    # Generate header
     generate_header(combinations, output_path)
 
 if __name__ == '__main__':

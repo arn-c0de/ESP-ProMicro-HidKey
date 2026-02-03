@@ -10,3 +10,6 @@ embedded_passwords.h
 __pycache__/
 *.bak
 *.swp
+
+
+.claude
