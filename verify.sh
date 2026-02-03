@@ -33,7 +33,12 @@ check() {
 }
 
 echo -e "${YELLOW}[1] Checking Dependencies${NC}"
-check "Arduino CLI installed" "command -v arduino-cli"
+# Prefer system arduino-cli, fallback to project-local install
+ARDUINO_CLI="$(command -v arduino-cli 2>/dev/null || true)"
+if [ -z "$ARDUINO_CLI" ] && [ -x "$PROJECT_DIR/bin/arduino-cli" ]; then
+    ARDUINO_CLI="$PROJECT_DIR/bin/arduino-cli"
+fi
+check "Arduino CLI installed" "[ -n \"$ARDUINO_CLI\" ]"
 check "Python 3 installed" "command -v python3"
 check "pip3 installed" "command -v pip3"
 # Check for pycryptodome inside project virtualenv if present, otherwise system
@@ -46,8 +51,8 @@ fi
 echo ""
 
 echo -e "${YELLOW}[2] Checking Arduino Configuration${NC}"
-check "SparkFun AVR core" "arduino-cli core list | grep -q 'sparkfun:avr'"
-check "AESLib library" "arduino-cli lib list | grep -q 'AESLib'"
+check "SparkFun AVR core" "$ARDUINO_CLI core list | grep -qi 'sparkfun:avr'"
+check "AESLib library" "$ARDUINO_CLI lib list | grep -q 'AESLib'"
 echo ""
 
 echo -e "${YELLOW}[3] Checking Project Files${NC}"
@@ -95,9 +100,9 @@ fi
 echo ""
 
 echo -e "${YELLOW}[6] Hardware Detection${NC}"
-if arduino-cli board list 2>/dev/null | grep -q "tty"; then
+if $ARDUINO_CLI board list 2>/dev/null | grep -q "tty"; then
     echo -e "${GREEN}✓${NC} Pro Micro detected"
-    arduino-cli board list | grep "tty" | head -1
+    $ARDUINO_CLI board list | grep "tty" | head -1
     ((PASS++))
 else
     echo -e "${YELLOW}?${NC} No Pro Micro detected (may not be connected)"

@@ -64,24 +64,40 @@ echo -e "${GREEN}✓ Firmware found: $(basename $FIRMWARE_HEX)${NC}"
 
 # ===== STEP 2: VERIFY ARDUINO CLI =====
 echo -e "${YELLOW}[2/6] Verifying Arduino CLI...${NC}"
-if ! command -v arduino-cli &> /dev/null; then
+# Prefer system arduino-cli, fall back to project-local. If running under sudo, try the original user's arduino-cli.
+ARDUINO_CLI="$(command -v arduino-cli 2>/dev/null || true)"
+ARDUINO_CLI_PREFIX=""
+if [ -z "$ARDUINO_CLI" ] && [ -x "$PROJECT_DIR/bin/arduino-cli" ]; then
+    ARDUINO_CLI="$PROJECT_DIR/bin/arduino-cli"
+    echo -e "${YELLOW}ℹ Using local arduino-cli at $ARDUINO_CLI${NC}"
+fi
+if [ -z "$ARDUINO_CLI" ] && [ -n "$SUDO_USER" ]; then
+    USER_ARDUINO="$(sudo -u "$SUDO_USER" command -v arduino-cli 2>/dev/null || true)"
+    if [ -n "$USER_ARDUINO" ]; then
+        ARDUINO_CLI="$USER_ARDUINO"
+        ARDUINO_CLI_PREFIX="sudo -u $SUDO_USER"
+        echo -e "${YELLOW}ℹ Will run arduino-cli as $SUDO_USER${NC}"
+    fi
+fi
+if [ -z "$ARDUINO_CLI" ]; then
     echo -e "${RED}[ERROR] arduino-cli not found!${NC}"
+    echo -e "${YELLOW}Install arduino-cli or add it to PATH. Prefer running this script without sudo.${NC}"
     exit 1
 fi
-echo -e "${GREEN}✓ Arduino CLI ready${NC}"
+echo -e "${GREEN}✓ Arduino CLI ready: ${ARDUINO_CLI}${NC}"
 
 # ===== STEP 3: DETECT PRO MICRO =====
 echo -e "${YELLOW}[3/6] Detecting Arduino Pro Micro...${NC}"
 
 # List connected boards
 echo -e "${BLUE}   Scanning USB ports...${NC}"
-arduino-cli board list
+$ARDUINO_CLI_PREFIX $ARDUINO_CLI board list
 
 # Try to detect Pro Micro automatically
 # Prefer JSON (contains addresses) when available, fallback to human-readable listing
-DETECTED_PORT=$( ( arduino-cli board list --format json 2>/dev/null | grep -o '"address":"[^"]*"' | grep -o '/dev/[^" ]*' | head -1 ) || true )
+DETECTED_PORT=$( ( $ARDUINO_CLI_PREFIX $ARDUINO_CLI board list --format json 2>/dev/null | grep -o '"address":"[^\"]*"' | grep -o '/dev/[^" ]*' | head -1 ) || true )
 if [ -z "$DETECTED_PORT" ]; then
-    DETECTED_PORT=$(arduino-cli board list 2>/dev/null | grep -o '/dev/[^ ]*' | head -1 || true)
+    DETECTED_PORT=$($ARDUINO_CLI_PREFIX $ARDUINO_CLI board list 2>/dev/null | grep -o '/dev/[^ ]*' | head -1 || true)
 fi
 
 if [ -z "$DETECTED_PORT" ]; then
@@ -96,9 +112,9 @@ if [ -z "$DETECTED_PORT" ]; then
     read -p "Press ENTER after resetting Pro Micro to bootloader mode..." dummy
     
     # Try detection again (JSON, then human-readable fallback)
-    DETECTED_PORT=$( ( arduino-cli board list --format json 2>/dev/null | grep -o '"address":"[^\"]*"' | grep -o '/dev/[^\"]*' | head -1 ) || true )
+    DETECTED_PORT=$( ( $ARDUINO_CLI_PREFIX $ARDUINO_CLI board list --format json 2>/dev/null | grep -o '"address":"[^\"]*"' | grep -o '/dev/[^\"]*' | head -1 ) || true )
     if [ -z "$DETECTED_PORT" ]; then
-        DETECTED_PORT=$(arduino-cli board list 2>/dev/null | grep -o '/dev/[^ ]*' | head -1 || true)
+        DETECTED_PORT=$($ARDUINO_CLI_PREFIX $ARDUINO_CLI board list 2>/dev/null | grep -o '/dev/[^ ]*' | head -1 || true)
     fi
     
     if [ -z "$DETECTED_PORT" ]; then
@@ -112,7 +128,7 @@ fi
 echo -e "${GREEN}✓ Pro Micro detected: $DETECTED_PORT${NC}"
 
 # Provide a warning if the detected board's FQBN isn't promicro (but continue)
-FQBN_DETECTED=$(arduino-cli board list --format json 2>/dev/null | grep -o '"fqbn":"[^"]*"' | sed 's/"fqbn":"\(.*\)"/\1/' | head -1 || true)
+FQBN_DETECTED=$($ARDUINO_CLI_PREFIX $ARDUINO_CLI board list --format json 2>/dev/null | grep -o '"fqbn":"[^" ]*"' | sed 's/"fqbn":"\(.*\)"/\1/' | head -1 || true)
 if [ -n "$FQBN_DETECTED" ] && ! echo "$FQBN_DETECTED" | grep -qi 'promicro'; then
     echo -e "${YELLOW}[WARN] Detected board FQBN: $FQBN_DETECTED (not SparkFun:avr:promicro). If this is wrong, enter port manually when prompted.${NC}"
 fi
@@ -129,34 +145,100 @@ sleep 1
 # ===== STEP 5: FLASH FIRMWARE =====
 echo -e "${YELLOW}[5/6] Flashing new firmware...${NC}"
 
-# Final port check right before upload
-if [ ! -e "$DETECTED_PORT" ]; then
-    echo -e "${YELLOW}   Port disappeared, re-detecting...${NC}"
-    sleep 2
+# Try to find Pro Micro on ACM port (not ttyS0)
+UPLOAD_PORT=""
+for port in /dev/ttyACM*; do
+    if [ -e "$port" ]; then
+        UPLOAD_PORT="$port"
+        echo -e "${GREEN}✓ Pro Micro found on $UPLOAD_PORT${NC}"
+        break
+    fi
+done
+
+if [ -z "$UPLOAD_PORT" ]; then
+    echo -e "${YELLOW}[WARN] No /dev/ttyACM* port found. Pro Micro needs manual reset.${NC}"
+    echo -e "${YELLOW}Press RESET button TWICE quickly on Pro Micro, then press ENTER...${NC}"
+    read -p "" dummy
     
-    for i in {1..3}; do
-        DETECTED_PORT=$( ( arduino-cli board list --format json 2>/dev/null | grep -o '"address":"[^\"]*"' | grep -o '/dev/[^\"]*' | head -1 ) || true )
-        if [ -z "$DETECTED_PORT" ]; then
-            DETECTED_PORT=$(arduino-cli board list 2>/dev/null | grep -o '/dev/[^ ]*' | head -1 || true)
-        fi
-        
-        if [ -n "$DETECTED_PORT" ] && [ -e "$DETECTED_PORT" ]; then
-            break
-        fi
+    for i in {1..5}; do
+        for port in /dev/ttyACM*; do
+            if [ -e "$port" ]; then
+                UPLOAD_PORT="$port"
+                break 2
+            fi
+        done
+        echo -e "${BLUE}   Waiting for bootloader... ($i/5)${NC}"
         sleep 1
     done
 fi
 
-echo -e "${YELLOW}   Using port: $DETECTED_PORT${NC}"
+if [ -z "$UPLOAD_PORT" ]; then
+    echo -e "${RED}[ERROR] Could not find Pro Micro port!${NC}"
+    exit 1
+fi
 
-# Upload via Arduino CLI (includes auto-erase)
-arduino-cli upload \
-    --fqbn SparkFun:avr:promicro \
-    --port "$DETECTED_PORT" \
-    --input-file "$FIRMWARE_HEX" \
-    --verify
+# Find avrdude from arduino installation
+AVRDUDE=""
+if [ -n "$SUDO_USER" ]; then
+    AVRDUDE=$(sudo -u "$SUDO_USER" find ~"$SUDO_USER"/.arduino15/packages/arduino/tools/avrdude -name "avrdude" -type f 2>/dev/null | head -1)
+fi
+if [ -z "$AVRDUDE" ]; then
+    AVRDUDE=$(find ~/.arduino15/packages/arduino/tools/avrdude -name "avrdude" -type f 2>/dev/null | head -1)
+fi
+AVRDUDE_CONF=$(dirname "$AVRDUDE")/../etc/avrdude.conf
+
+if [ -z "$AVRDUDE" ] || [ ! -f "$AVRDUDE" ]; then
+    echo -e "${RED}[ERROR] avrdude not found${NC}"
+    exit 1
+fi
+
+echo ""
+echo -e "${BLUE}╔══════════════════════════════════════════════════════╗${NC}"
+echo -e "${BLUE}║               BOOTLOADER RESET & UPLOAD              ║${NC}"
+echo -e "${BLUE}╚══════════════════════════════════════════════════════╝${NC}"
+echo ""
+
+# Trigger bootloader with 1200bps reset
+echo -e "${YELLOW}   Triggering bootloader (1200bps reset)...${NC}"
+stty -F "$UPLOAD_PORT" 1200 2>/dev/null || true
+sleep 2
+
+# Wait for bootloader port to reappear
+echo -e "${YELLOW}   Waiting for bootloader port...${NC}"
+BOOTLOADER_PORT=""
+for i in {1..10}; do
+    for port in /dev/ttyACM*; do
+        if [ -e "$port" ]; then
+            BOOTLOADER_PORT="$port"
+            echo -e "${GREEN}   ✓ Bootloader ready: $BOOTLOADER_PORT (attempt $i)${NC}"
+            break 2
+        fi
+    done
+    echo -e "${BLUE}   > Attempt $i/10...${NC}"
+    sleep 1
+done
+
+if [ -z "$BOOTLOADER_PORT" ]; then
+    echo -e "${RED}[ERROR] Bootloader port not found! Try manual reset (press RESET twice).${NC}"
+    exit 1
+fi
+
+echo ""
+echo -e "${YELLOW}   Flashing with avrdude...${NC}"
+echo -e "${BLUE}   Firmware: $FIRMWARE_HEX ($(stat -c%s "$FIRMWARE_HEX" 2>/dev/null || echo 'unknown') bytes)${NC}"
+echo -e "${BLUE}   Command: $AVRDUDE -C$AVRDUDE_CONF -v -V -patmega32u4 -cavr109 -P$BOOTLOADER_PORT -b57600 -D -Uflash:w:$FIRMWARE_HEX:i${NC}"
+echo ""
+
+# Flash with avrdude (use absolute path to firmware)
+"$AVRDUDE" -C"$AVRDUDE_CONF" -v -V -patmega32u4 -cavr109 -P"$BOOTLOADER_PORT" -b57600 -D "-Uflash:w:$FIRMWARE_HEX:i"
 
 UPLOAD_STATUS=$?
+
+echo ""
+echo -e "${BLUE}╔══════════════════════════════════════════════════════╗${NC}"
+echo -e "${BLUE}║              UPLOAD COMPLETE                         ║${NC}"
+echo -e "${BLUE}╚══════════════════════════════════════════════════════╝${NC}"
+echo ""
 
 if [ $UPLOAD_STATUS -eq 0 ]; then
     echo -e "${GREEN}✓ Firmware flashed successfully!${NC}"

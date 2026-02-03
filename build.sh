@@ -12,7 +12,7 @@ NC='\033[0m' # No Color
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_TEMP="$PROJECT_DIR/build_temp"
 SECRETS_SCRIPT="$PROJECT_DIR/encrypt_secrets.py"
-SKETCH_NAME="ESP-promicro-hidkey"
+SKETCH_NAME="ESP-ProMicro-HidKey"
 
 echo -e "${BLUE}╔══════════════════════════════════════════════════════╗${NC}"
 echo -e "${BLUE}║  Secure HID Pro Micro - Build System (Arduino CLI)  ║${NC}"
@@ -34,26 +34,32 @@ echo -e "${GREEN}✓ .env found${NC}"
 
 # ===== STEP 2: VERIFY ARDUINO CLI =====
 echo -e "${YELLOW}[2/9] Verifying Arduino CLI installation...${NC}"
-if ! command -v arduino-cli &> /dev/null; then
+# Locate arduino-cli: prefer system-wide, fall back to project-local install
+ARDUINO_CLI="$(command -v arduino-cli 2>/dev/null || true)"
+if [ -z "$ARDUINO_CLI" ] && [ -x "$PROJECT_DIR/bin/arduino-cli" ]; then
+    ARDUINO_CLI="$PROJECT_DIR/bin/arduino-cli"
+    echo -e "${YELLOW}ℹ Using local arduino-cli at $ARDUINO_CLI${NC}"
+fi
+if [ -z "$ARDUINO_CLI" ]; then
     echo -e "${RED}[ERROR] arduino-cli not found!${NC}"
     echo -e "${YELLOW}Install with:${NC}"
     echo -e "  curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh"
     echo -e "  export PATH=\$PATH:\$HOME/bin"
     exit 1
 fi
-echo -e "${GREEN}✓ Arduino CLI found: $(arduino-cli version | head -1)${NC}"
+echo -e "${GREEN}✓ Arduino CLI found: $($ARDUINO_CLI version | head -1)${NC}"
 
 # ===== STEP 3: CHECK/INSTALL SPARKFUN AVR CORE =====
 echo -e "${YELLOW}[3/9] Checking SparkFun AVR board support...${NC}"
-if ! arduino-cli core list | grep -q "sparkfun:avr"; then
+if ! $ARDUINO_CLI core list | grep -qi "sparkfun:avr"; then
     echo -e "${YELLOW}Installing SparkFun AVR core...${NC}"
     
     # Add SparkFun board manager URL if not present
     BOARD_URL="https://raw.githubusercontent.com/sparkfun/Arduino_Boards/master/IDE_Board_Manager/package_sparkfun_index.json"
-    arduino-cli config init 2>/dev/null || true
-    arduino-cli config add board_manager.additional_urls "$BOARD_URL" 2>/dev/null || true
-    arduino-cli core update-index
-    arduino-cli core install sparkfun:avr
+    $ARDUINO_CLI config init 2>/dev/null || true
+    $ARDUINO_CLI config add board_manager.additional_urls "$BOARD_URL" 2>/dev/null || true
+    $ARDUINO_CLI core update-index
+    $ARDUINO_CLI core install sparkfun:avr
     
     if [ $? -ne 0 ]; then
         echo -e "${RED}[ERROR] Failed to install SparkFun AVR core${NC}"
@@ -66,13 +72,23 @@ echo -e "${GREEN}✓ SparkFun AVR core ready${NC}"
 echo -e "${YELLOW}[4/9] Checking Arduino libraries...${NC}"
 
 # Check for AESLib library
-if ! arduino-cli lib list | grep -q "AESLib"; then
+if ! $ARDUINO_CLI lib list | grep -qi "AESLib"; then
     echo -e "${YELLOW}Installing AESLib...${NC}"
-    arduino-cli lib install "AESLib"
+    $ARDUINO_CLI lib install "AESLib"
 fi
 
-# Check for Keyboard library (built-in, but verify)
-echo -e "${GREEN}✓ Required libraries available${NC}"
+# Check for Keyboard library (should be provided by core, but ensure availability)
+if ! $ARDUINO_CLI lib list | grep -qi "Keyboard"; then
+    echo -e "${YELLOW}Keyboard library not found as a separate library. Trying to install 'Keyboard' library via Library Manager...${NC}"
+    $ARDUINO_CLI lib install "Keyboard" || true
+fi
+
+# Final check
+if $ARDUINO_CLI lib list | grep -qi "AESLib\|Keyboard"; then
+    echo -e "${GREEN}✓ Required libraries available${NC}"
+else
+    echo -e "${YELLOW}? Some required libraries may be missing (AESLib/Keyboard). Build may fail."
+fi
 
 # ===== STEP 5: CREATE BUILD TEMP DIRECTORY =====
 echo -e "${YELLOW}[5/9] Preparing build environment...${NC}"
@@ -125,11 +141,37 @@ echo -e "${GREEN}✓ Secrets encrypted and header generated${NC}"
 # ===== STEP 7: COMPILE WITH ARDUINO CLI =====
 echo -e "${YELLOW}[7/9] Compiling firmware...${NC}"
 
-arduino-cli compile \
+# Prefer compiling the main sketch file directly to avoid sketch-folder-name mismatch
+MAIN_SKETCH="$PROJECT_DIR/${SKETCH_NAME}.ino"
+if [ ! -f "$MAIN_SKETCH" ]; then
+    echo -e "${RED}[ERROR] Main sketch not found: $MAIN_SKETCH${NC}"
+    echo -e "${YELLOW}Expected main sketch: ${SKETCH_NAME}.ino${NC}"
+    # Cleanup
+    rm -f "$PROJECT_DIR/secrets.h"
+    rm -rf "$BUILD_TEMP"
+    exit 1
+fi
+
+# Arduino CLI expects the main .ino filename to match the sketch folder name.
+# Create a temporary symlink with the folder base name pointing to the real main sketch
+SKETCH_BASENAME="$(basename "$PROJECT_DIR").ino"
+SYMLINK_PATH="$PROJECT_DIR/$SKETCH_BASENAME"
+REMOVE_SYMLINK=false
+if [ ! -f "$SYMLINK_PATH" ]; then
+    ln -s "${SKETCH_NAME}.ino" "$SYMLINK_PATH"
+    REMOVE_SYMLINK=true
+fi
+
+$ARDUINO_CLI compile \
     --fqbn SparkFun:avr:promicro \
     --build-property "build.extra_flags=-DSECURE_HID_BUILD -Wall" \
     --export-binaries \
     "$PROJECT_DIR"
+
+# Remove temporary symlink if we created it
+if [ "$REMOVE_SYMLINK" = true ]; then
+    rm -f "$SYMLINK_PATH"
+fi
 
 if [ $? -ne 0 ]; then
     echo -e "${RED}[ERROR] Compilation failed!${NC}"

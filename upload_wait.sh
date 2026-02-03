@@ -11,6 +11,13 @@ echo -e "${BLUE}╔════════════════════�
 echo -e "${BLUE}║  Pro Micro Bootloader Upload - Auto-Wait Mode       ║${NC}"
 echo -e "${BLUE}╚══════════════════════════════════════════════════════╝${NC}"
 echo ""
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Prefer system arduino-cli, fallback to local project/bin
+ARDUINO_CLI="$(command -v arduino-cli 2>/dev/null || true)"
+if [ -z "$ARDUINO_CLI" ] && [ -x "$PROJECT_DIR/bin/arduino-cli" ]; then
+    ARDUINO_CLI="$PROJECT_DIR/bin/arduino-cli"
+fi
+
 echo -e "${YELLOW}ANLEITUNG:${NC}"
 echo -e "  1. Pro Micro per USB anschließen"
 echo -e "  2. RESET-Button 2x schnell drücken"
@@ -40,7 +47,7 @@ while [ $ELAPSED -lt $TIMEOUT ]; do
         
         # Try to upload
         echo -e "${YELLOW}Flashe Firmware...${NC}"
-        if arduino-cli upload --fqbn SparkFun:avr:promicro --port "$DETECTED_PORT" --input-file firmware.hex --verify; then
+        if $ARDUINO_CLI upload --fqbn SparkFun:avr:promicro --port "$DETECTED_PORT" --input-file firmware.hex --verify; then
             echo ""
             echo -e "${GREEN}╔══════════════════════════════════════════════════════╗${NC}"
             echo -e "${GREEN}║            UPLOAD ERFOLGREICH!                       ║${NC}"
