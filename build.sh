@@ -66,6 +66,21 @@ if [ -f "$SKETCH_DIR/embedded_password.h" ]; then
     cp "$SKETCH_DIR/embedded_password.h" "$BUILD_DIR/"
 fi
 
+if [ -f "$SKETCH_DIR/aes.h" ]; then
+    echo "Copying aes.h to $BUILD_DIR"
+    cp "$SKETCH_DIR/aes.h" "$BUILD_DIR/"
+fi
+
+if [ -f "$SKETCH_DIR/button.h" ]; then
+    echo "Copying button.h to $BUILD_DIR"
+    cp "$SKETCH_DIR/button.h" "$BUILD_DIR/"
+fi
+
+if [ -f "$SKETCH_DIR/led.h" ]; then
+    echo "Copying led.h to $BUILD_DIR"
+    cp "$SKETCH_DIR/led.h" "$BUILD_DIR/"
+fi
+
 $ARDUINO_CLI compile -v --fqbn "$BOARD" "$BUILD_DIR"
 
 if [ $? -ne 0 ]; then

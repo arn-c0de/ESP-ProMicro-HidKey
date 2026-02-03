@@ -6,11 +6,13 @@ Multi-password HID keyboard emulator for Arduino Pro Micro Leonardo (ATmega32U4)
 
 - Multiple password combinations triggered by button sequences
 - Short press (< 500ms) = 0, Long press (>= 500ms) = 1
-- XOR-obfuscated password storage in flash memory
-- Brute-force protection with automatic lockout
+- **AES-128-ECB encrypted password storage** in flash memory
+- **Per-device encryption key derivation** (master key XORed with unique device ID)
+- **Persistent brute-force protection** with EEPROM storage (survives power cycles)
 - LED feedback for status indication
 - Configurable via .env file
 - No passwords in source code
+- **Enhanced RAM security** with multi-pass buffer clearing
 
 ## Hardware Requirements
 
@@ -40,9 +42,19 @@ GND         ---- LED cathode (-)
 
 ## Software Requirements
 
-- Python 3.6 or higher
+- Python 3.6 or higher with **pycryptodomex** library
 - arduino-cli
 - SparkFun AVR board support
+
+### Installing Python Dependencies
+
+```bash
+# Debian/Ubuntu/Kali
+sudo apt install python3-pycryptodomex
+
+# Or via pip (if not using system package manager)
+pip3 install pycryptodomex --user
+```
 
 ### Installing arduino-cli
 
@@ -59,15 +71,25 @@ Or install via package manager (apt, brew, etc.)
 
 ```bash
 git clone <your-repo-url>
-cd ESP-ProMicro-HidKey
+# AES-128 Master Key (32 hex characters = 16 bytes)
+# Generate with: python3 -c "import secrets; print(secrets.token_hex(16))"
+AES_MASTER_KEY=A7B3C9D2E8F41A6B5C7E9F2D4A8C1B3E
+
+COMBINATION_0_SEQUENCE="0,0,1,0"
+COMBINATION_0_PASSWORD="admin123"
+
+COMBINATION_1_SEQUENCE="1,0,0"
+COMBINATION_1_PASSWORD="user456"
+
+COMBINATION_2_SEQUENCE="0,1,1,0,1"
+COMBINATION_2_PASSWORD="password789"
 ```
 
-### 2. Configure Passwords
-
-Create a `.env` file in the project root (see `.env.example` for format):
-
-```env
-COMBINATION_COUNT=3
+**AES Key Generation:**
+```bash
+python3 -c "import secrets; print(secrets.token_hex(16))"
+```
+This generates a cryptographically secure random 128-bit key.BINATION_COUNT=3
 
 COMBINATION_0_SEQUENCE="0,0,1,0"
 COMBINATION_0_PASSWORD="admin123"
@@ -120,7 +142,33 @@ After flashing:
 4. 3-second timeout between presses before sequence resets
 
 ## LED Status Indicators
+Encryption Architecture
 
+**AES-128-ECB Encryption:**
+- Passwords are encrypted with AES-128 in ECB mode
+- Master key from `.env` is stored in flash (PROGMEM)
+- Each device generates a unique 16-byte ID on first boot (stored in EEPROM)
+- Actual decryption key = Master Key XOR Device ID
+- Makes each device's encryption unique, even with same master key
+
+**Memory Security:**
+- Passwords stored encrypted in flash (PROGMEM)
+- Only decrypted into RAM during transmission
+- 64-byte RAM buffer cleared with 3-pass overwrite (0xFF, 0xAA, 0x00)
+- AES context cleared from RAM after use
+- Plaintext passwords never in source code or version control
+
+### Persistent Brute-Force Protection
+
+- Failed attempt counter stored in EEPROM
+- **Survives power cycles and device resets**
+- Maximum 5 failed attempts before 30-second lockout
+- Counter persists across reboots (no reset bypass)
+- Only successful password entry resets counter
+
+### WARNING: Physical Access Limitations
+
+Despite improvements, this is still NOT cryptographically secure against physical attacks:
 | Pattern | Meaning |
 |---------|---------|
 | 4 quick blinks | Password matched and sent successfully |
@@ -194,9 +242,12 @@ nano .env
 
 ```
 ESP-ProMicro-HidKey/
-├── ESP-ProMicro-Test.ino       # Main Arduino sketch
-├── embedded_passwords.h         # Auto-generated (DO NOT EDIT)
-├── generate_password_header.py  # Password header generator
+├── ESP-ProMicro-Test.ino       # Main Arduino sketch with AES decryption
+├── aes.h                        # Minimal AES-128-ECB implementation
+├── embedded_passwords.h         # Auto-generated (AES-encrypted passwords)
+├── generate_password_header.py  # Password encryption generator (AES)
+├── button.h                     # Button handler module (optional)
+├── led.h                        # LED controller module (optional)
 ├── build.sh                     # Build and flash script
 ├── .env                         # Your password config (gitignored)
 ├── .env.example                 # Example configuration
