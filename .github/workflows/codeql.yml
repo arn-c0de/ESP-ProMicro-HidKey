@@ -23,14 +23,24 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Removed c-cpp: Arduino .ino files need Arduino CLI build environment
-          # which CodeQL autobuild doesn't support
           - language: python
+            build-mode: none
+          - language: c-cpp
             build-mode: none
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Set up Arduino CLI
+        if: matrix.language == 'c-cpp'
+        uses: arduino/setup-arduino-cli@v1
+
+      - name: Build Arduino sketch
+        if: matrix.language == 'c-cpp'
+        run: |
+          arduino-cli core install esp32:esp32
+          arduino-cli compile --fqbn esp32:esp32:esp32 ESP-ProMicro-HidKey.ino
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v3
