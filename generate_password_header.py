@@ -3,6 +3,7 @@ import os, sys
 from pathlib import Path
 from Cryptodome.Cipher import AES
 from Cryptodome.Util.Padding import pad
+from Cryptodome.Random import get_random_bytes
 
 MAX_SEQUENCE_LENGTH = 20
 
@@ -35,12 +36,21 @@ def parse_combinations(env_vars):
         combinations.append({'index': i, 'sequence': sequence, 'password': env_vars[pwd_key]})
     return combinations
 
-def aes_encrypt(password, key_hex):
+def aes_encrypt_cbc(password, key_hex):
+    """Encrypt password using AES-128-CBC (improved from ECB)"""
     key = bytes.fromhex(key_hex)
     plaintext = password.encode('utf-8')
     padded = pad(plaintext, AES.block_size)
-    cipher = AES.new(key, AES.MODE_ECB)
-    return list(cipher.encrypt(padded))
+    
+    # Generate random IV (16 bytes)
+    iv = get_random_bytes(AES.block_size)
+    
+    # Encrypt with CBC mode
+    cipher = AES.new(key, AES.MODE_CBC, iv)
+    ciphertext = cipher.encrypt(padded)
+    
+    # Return IV + ciphertext as list
+    return list(iv + ciphertext)
 
 def generate_header(combinations, aes_key, output_path):
     sequence_defs = []
@@ -52,7 +62,8 @@ def generate_header(combinations, aes_key, output_path):
         seq_arr = ", ".join(str(s) for s in comb['sequence'])
         sequence_defs.append(f"const byte PROGMEM seq_{idx}[] = {{{seq_arr}}};")
         
-        encrypted = aes_encrypt(comb['password'], aes_key)
+        # Use AES-CBC with IV instead of ECB
+        encrypted = aes_encrypt_cbc(comb['password'], aes_key)
         # Add stage-1 encryption flag (0x01) at the beginning
         pwd_with_flag = [0x01] + encrypted
         pwd_arr = ", ".join(f"0x{b:02X}" for b in pwd_with_flag)
@@ -64,14 +75,15 @@ def generate_header(combinations, aes_key, output_path):
     key_bytes = ', '.join(f'0x{int(aes_key[i:i+2], 16):02X}' for i in range(0, len(aes_key), 2))
     
     header = f"""// Auto-generiert von generate_password_header.py
-// Passwords are STAGE-1 encrypted (flag 0x01) with AES Master Key
+// Passwords are STAGE-1 encrypted (flag 0x01) with AES Master Key using CBC mode
+// First 16 bytes after flag are the IV, followed by ciphertext
 // ESP will decrypt and re-encrypt with device-specific key on first boot
 #ifndef EMBEDDED_PASSWORDS_H
 #define EMBEDDED_PASSWORDS_H
 #include <Arduino.h>
 
-#define ENCRYPTION_STAGE_1 0x01  // Encrypted with master key only
-#define ENCRYPTION_STAGE_2 0x02  // Re-encrypted with device-specific key
+#define ENCRYPTION_STAGE_1 0x01  // Encrypted with master key using AES-CBC
+#define ENCRYPTION_STAGE_2 0x02  // Re-encrypted with device-specific key using ChaCha20
 
 const byte PROGMEM AES_MASTER_KEY[] = {{ {key_bytes} }};
 

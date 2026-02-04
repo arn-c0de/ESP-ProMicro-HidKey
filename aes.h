@@ -22,6 +22,12 @@ void AES_init_ctx(struct AES_ctx* ctx, const uint8_t* key);
 // buf must be exactly 16 bytes
 void AES_ECB_decrypt(const struct AES_ctx* ctx, uint8_t* buf);
 
+// Decrypt data using CBC mode
+// iv: initialization vector (16 bytes), will be modified
+// buf: buffer to decrypt (must be multiple of 16 bytes)
+// length: length in bytes (must be multiple of 16)
+void AES_CBC_decrypt(const struct AES_ctx* ctx, uint8_t* iv, uint8_t* buf, size_t length);
+
 // Internal functions (declared here for implementation below)
 static void KeyExpansion(uint8_t* RoundKey, const uint8_t* Key);
 static void InvCipher(uint8_t* state, const uint8_t* RoundKey);
@@ -263,6 +269,28 @@ static void InvCipher(uint8_t* state, const uint8_t* RoundKey) {
   InvShiftRows(state);
   InvSubBytes(state);
   AddRoundKey(0, state, RoundKey);
+}
+
+// CBC mode decryption
+void AES_CBC_decrypt(const struct AES_ctx* ctx, uint8_t* iv, uint8_t* buf, size_t length) {
+  size_t i;
+  uint8_t storeNextIv[AES_BLOCKLEN];
+  
+  for (i = 0; i < length; i += AES_BLOCKLEN) {
+    // Store current ciphertext block as next IV
+    memcpy(storeNextIv, buf + i, AES_BLOCKLEN);
+    
+    // Decrypt block
+    AES_ECB_decrypt(ctx, buf + i);
+    
+    // XOR with IV
+    for (uint8_t j = 0; j < AES_BLOCKLEN; ++j) {
+      buf[i + j] ^= iv[j];
+    }
+    
+    // Update IV for next block
+    memcpy(iv, storeNextIv, AES_BLOCKLEN);
+  }
 }
 
 #endif

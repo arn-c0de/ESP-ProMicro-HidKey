@@ -6,11 +6,18 @@
 #include <EEPROM.h>
 #include "embedded_passwords.h"
 #include "aes.h"
+#include "chacha20.h"
+#include "sha256.h"
+#include "build_config.h"
 
 #define LED_PIN 10
 #define BUTTON_PIN 9
 #define LONG_PRESS_MS 500
-#define TIMEOUT_MS 3000
+
+#ifndef SEQUENCE_TIMEOUT_MS
+#define SEQUENCE_TIMEOUT_MS 3000
+#endif
+#define TIMEOUT_MS SEQUENCE_TIMEOUT_MS
 #define MAX_SEQUENCE_LENGTH 20
 
 // EEPROM addresses
@@ -30,6 +37,7 @@ int currentSequenceIndex = 0;
 unsigned long pressStart = 0;
 unsigned long lastAction = 0;
 bool buttonWasPressed = false;
+bool sequenceRecognized = false;         // Track if we're already processing a recognized sequence
 
 // Brute-force state
 int failedAttempts = 0;
@@ -40,7 +48,7 @@ bool isLockedOut = false;
 byte currentInput[MAX_SEQUENCE_LENGTH];
 
 // Device-specific encryption key (derived from master key + device ID)
-byte derivedKey[AES_KEYLEN];
+byte derivedKey[CHACHA20_KEY_SIZE];  // 32 bytes for ChaCha20
 
 // Runtime storage for stage-2 encrypted passwords (loaded from EEPROM)
 // Max: 3 passwords * 64 bytes each = 192 bytes
@@ -63,8 +71,16 @@ void initializeDeviceID() {
     return;
   }
   
-  // First boot: Generate random device ID
-  randomSeed(analogRead(A0) ^ micros());
+  // First boot: Generate random device ID with improved entropy
+  // Use multiple entropy sources for better randomness
+  uint32_t seed = 0;
+  for (int i = 0; i < 4; i++) {
+    seed ^= analogRead(A0 + i);  // Multiple analog pins
+    seed ^= micros();
+    delay(10);
+  }
+  randomSeed(seed);
+  
   for (int i = 0; i < 16; i++) {
     byte randomByte = random(256);
     EEPROM.write(EEPROM_DEVICE_ID_ADDR + i, randomByte);
@@ -80,7 +96,7 @@ void initializeDeviceID() {
 }
 
 void deriveEncryptionKey() {
-  // Derive device-specific key: Master Key XOR Device ID
+  // Derive device-specific key using HKDF-SHA256 instead of simple XOR
   byte masterKey[16];
   byte deviceID[16];
   
@@ -94,21 +110,27 @@ void deriveEncryptionKey() {
     deviceID[i] = EEPROM.read(EEPROM_DEVICE_ID_ADDR + i);
   }
   
-  // XOR to create device-specific key
-  for (int i = 0; i < 16; i++) {
-    derivedKey[i] = masterKey[i] ^ deviceID[i];
-  }
+  // Combine master key and device ID as input key material
+  byte ikm[32];
+  memcpy(ikm, masterKey, 16);
+  memcpy(ikm + 16, deviceID, 16);
+  
+  // Use HKDF to derive 32-byte key (for ChaCha20)
+  const char* info = "ESP-ProMicro-HidKey-v2";
+  HKDF_SHA256(derivedKey, CHACHA20_KEY_SIZE, ikm, 32, (const uint8_t*)info, strlen(info));
   
   // Clear sensitive data
   memset(masterKey, 0, 16);
   memset(deviceID, 0, 16);
+  memset(ikm, 0, 32);
 }
+
 
 // ==================== Stage-2 Re-Encryption ====================
 /**
  * Performs stage-2 re-encryption on first boot:
- * 1. Decrypt passwords with master key (stage-1)
- * 2. Re-encrypt with device-specific key (stage-2)
+ * 1. Decrypt passwords with master key (stage-1, AES-CBC)
+ * 2. Re-encrypt with device-specific key (stage-2, ChaCha20)
  * 3. Store in EEPROM for future use
  */
 void performStage2ReEncryption() {
@@ -119,9 +141,8 @@ void performStage2ReEncryption() {
     masterKey[i] = pgm_read_byte(&AES_MASTER_KEY[i]);
   }
   
-  AES_ctx masterCtx, deviceCtx;
+  AES_ctx masterCtx;
   AES_init_ctx(&masterCtx, masterKey);
-  AES_init_ctx(&deviceCtx, derivedKey);
   
   int eepromOffset = EEPROM_PASSWORDS_START;
   
@@ -149,34 +170,37 @@ void performStage2ReEncryption() {
       encBuffer[j] = encBuffer[j + 1];
     }
     
-    // Stage-1 Decrypt: Use master key to decrypt
-    int blocks = (encLen + 15) / 16;
-    for (int b = 0; b < blocks; b++) {
-      AES_ECB_decrypt(&masterCtx, encBuffer + (b * 16));
+    // Next 16 bytes are IV, rest is ciphertext
+    byte iv[16];
+    memcpy(iv, encBuffer, 16);
+    int cipherLen = encLen - 16;
+    
+    // Move ciphertext to beginning of buffer
+    for (int j = 0; j < cipherLen; j++) {
+      encBuffer[j] = encBuffer[j + 16];
     }
     
-    // Now we have plaintext - re-encrypt with device key using XOR
+    // Stage-1 Decrypt: Use master key with CBC mode
+    AES_CBC_decrypt(&masterCtx, iv, encBuffer, cipherLen);
+    
+    // Now we have plaintext - generate random nonce for ChaCha20
+    byte nonce[CHACHA20_NONCE_SIZE];
+    for (int j = 0; j < CHACHA20_NONCE_SIZE; j++) {
+      nonce[j] = random(256);
+    }
+    
     int plaintextLen = entry.plaintext_len;
     
-    // Pad to 16-byte blocks
-    int paddedLen = ((plaintextLen + 15) / 16) * 16;
-    for (int j = plaintextLen; j < paddedLen; j++) {
-      encBuffer[j] = 0;
-    }
+    // Stage-2 Encrypt: ChaCha20 with device-specific key
+    ChaCha20_encrypt(encBuffer, plaintextLen, derivedKey, nonce, 0);
     
-    // Stage-2 Encrypt: XOR with device-specific key
-    for (int j = 0; j < paddedLen; j++) {
-      encBuffer[j] ^= derivedKey[j % 16];
-    }
-    
-    // Add stage-2 flag
+    // Prepare final buffer: flag + nonce + ciphertext
     byte finalBuffer[MAX_PASSWORD_BLOCK_SIZE];
     finalBuffer[0] = ENCRYPTION_STAGE_2;
-    for (int j = 0; j < paddedLen && j < MAX_PASSWORD_BLOCK_SIZE - 1; j++) {
-      finalBuffer[j + 1] = encBuffer[j];
-    }
+    memcpy(finalBuffer + 1, nonce, CHACHA20_NONCE_SIZE);
+    memcpy(finalBuffer + 1 + CHACHA20_NONCE_SIZE, encBuffer, plaintextLen);
     
-    int finalLen = paddedLen + 1;
+    int finalLen = 1 + CHACHA20_NONCE_SIZE + plaintextLen;
     
     // Store in EEPROM
     for (int j = 0; j < finalLen; j++) {
@@ -193,6 +217,8 @@ void performStage2ReEncryption() {
     // Security: Clear buffers
     memset(encBuffer, 0, sizeof(encBuffer));
     memset(finalBuffer, 0, sizeof(finalBuffer));
+    memset(nonce, 0, sizeof(nonce));
+    memset(iv, 0, sizeof(iv));
   }
   
   // Mark re-encryption as done
@@ -202,7 +228,6 @@ void performStage2ReEncryption() {
   // Clear sensitive data
   memset(masterKey, 0, 16);
   memset(&masterCtx, 0, sizeof(masterCtx));
-  memset(&deviceCtx, 0, sizeof(deviceCtx));
   
   digitalWrite(LED_PIN, LOW);
 }
@@ -217,10 +242,9 @@ void loadStage2Passwords() {
     PasswordEntry entry;
     memcpy_P(&entry, &PASSWORD_ENTRIES[i], sizeof(PasswordEntry));
     
-    // Calculate expected length based on plaintext
+    // Calculate expected length: flag(1) + nonce(12) + ciphertext(plaintextLen)
     int plaintextLen = entry.plaintext_len;
-    int paddedLen = ((plaintextLen + 15) / 16) * 16;
-    int finalLen = paddedLen + 1;  // +1 for flag
+    int finalLen = 1 + CHACHA20_NONCE_SIZE + plaintextLen;
     
     // Load from EEPROM
     for (int j = 0; j < finalLen && j < MAX_PASSWORD_BLOCK_SIZE; j++) {
@@ -341,16 +365,18 @@ void executePassword(int entryIndex) {
     return;
   }
   
-  // Remove flag
-  encLen--;
-  for (int i = 0; i < encLen; i++) {
-    decBuffer[i] = decBuffer[i + 1];
+  // Extract nonce (bytes 1-12)
+  byte nonce[CHACHA20_NONCE_SIZE];
+  memcpy(nonce, decBuffer + 1, CHACHA20_NONCE_SIZE);
+  
+  // Extract ciphertext (after flag and nonce)
+  int cipherStart = 1 + CHACHA20_NONCE_SIZE;
+  for (int i = 0; i < plaintextLen; i++) {
+    decBuffer[i] = decBuffer[cipherStart + i];
   }
   
-  // Decrypt with device-specific key (XOR)
-  for (int i = 0; i < encLen; i++) {
-    decBuffer[i] ^= derivedKey[i % 16];
-  }
+  // Decrypt with ChaCha20
+  ChaCha20_decrypt(decBuffer, plaintextLen, derivedKey, nonce, 0);
   
   // Type password
   Keyboard.begin();
@@ -363,6 +389,7 @@ void executePassword(int entryIndex) {
   memset(decBuffer, 0xFF, sizeof(decBuffer));
   memset(decBuffer, 0xAA, sizeof(decBuffer));
   memset(decBuffer, 0x00, sizeof(decBuffer));
+  memset(nonce, 0, sizeof(nonce));
   
   blinkSuccess();
   
@@ -388,70 +415,10 @@ void processButtonPress(int pressType) {
   currentInput[currentSequenceIndex] = pressType;
   currentSequenceIndex++;
   lastAction = millis();
-
-  // Check after each press if a combination matches
-  int matchIndex = findMatchingPassword(currentSequenceIndex);
-  if (matchIndex >= 0) {
-    // Match found!
-    executePassword(matchIndex);
-    blinkSuccess(4);
-
-    // Reset brute-force counter on success
-    failedAttempts = 0;
-    saveFailedAttempts();
-
-    // Reset for next sequence
-    currentSequenceIndex = 0;
-    memset(currentInput, 0, sizeof(currentInput));
-    return;
-  }
-
-  // Check if current input could lead to any valid combination
-  bool couldMatch = false;
-  for (int i = 0; i < PASSWORD_ENTRY_COUNT; i++) {
-    // Load entry from PROGMEM to RAM
-    PasswordEntry entry;
-    memcpy_P(&entry, &PASSWORD_ENTRIES[i], sizeof(PasswordEntry));
-    int seqLen = entry.sequence_len;
-
-    // If our input is longer than this sequence, it can never match
-    if (currentSequenceIndex > seqLen) {
-      continue;
-    }
-
-    // Check if current input matches the start of this sequence
-    bool matchesStart = true;
-    for (int j = 0; j < currentSequenceIndex; j++) {
-      byte expectedByte = pgm_read_byte(&entry.sequence[j]);
-      if (currentInput[j] != expectedByte) {
-        matchesStart = false;
-        break;
-      }
-    }
-
-    if (matchesStart) {
-      couldMatch = true;
-      break;
-    }
-  }
-
-  if (!couldMatch) {
-    // This input cannot lead to any valid combination
-    failedAttempts++;
-    saveFailedAttempts();
-
-    if (failedAttempts >= MAX_FAILED_ATTEMPTS) {
-      // Activate lockout
-      isLockedOut = true;
-      lockoutStart = millis();
-      blinkLockout();
-    } else {
-      blinkFail();
-    }
-
-    currentSequenceIndex = 0;
-    memset(currentInput, 0, sizeof(currentInput));
-  }
+  sequenceRecognized = false;  // Reset recognition flag when new input arrives
+  
+  // Just collect the button press - don't check yet
+  // Recognition will happen 3 seconds after last press
 }
 
 // ==================== Setup & Main Loop ====================
@@ -521,12 +488,58 @@ void loop() {
     }
   }
 
-  // Timeout: no input for too long -> Reset
-  if (currentSequenceIndex > 0 && (unsigned long)(now - lastAction) > TIMEOUT_MS) {
-    blinkFail();
-    currentSequenceIndex = 0;
-    memset(currentInput, 0, sizeof(currentInput));
-    buttonWasPressed = false;  // Reset button state to prevent race condition
+  // Check for sequence recognition: if 3 seconds pass without button press, try to recognize
+  if (currentSequenceIndex > 0 && !sequenceRecognized) {
+    unsigned long inactiveDuration = (unsigned long)(now - lastAction);
+    if (inactiveDuration >= TIMEOUT_MS) {
+      // 3 seconds of inactivity - try to recognize the sequence
+      sequenceRecognized = true;
+      
+      int matchIndex = findMatchingPassword(currentSequenceIndex);
+      if (matchIndex >= 0) {
+        // Match found!
+        executePassword(matchIndex);
+        blinkSuccess(4);
+        failedAttempts = 0;
+        saveFailedAttempts();
+      } else {
+        // Check if valid prefix
+        bool couldMatch = false;
+        for (int i = 0; i < PASSWORD_ENTRY_COUNT; i++) {
+          PasswordEntry entry;
+          memcpy_P(&entry, &PASSWORD_ENTRIES[i], sizeof(PasswordEntry));
+          if (currentSequenceIndex > entry.sequence_len) continue;
+          
+          bool matchesStart = true;
+          for (int j = 0; j < currentSequenceIndex; j++) {
+            if (currentInput[j] != pgm_read_byte(&entry.sequence[j])) {
+              matchesStart = false;
+              break;
+            }
+          }
+          if (matchesStart) {
+            couldMatch = true;
+            break;
+          }
+        }
+        
+        if (!couldMatch) {
+          failedAttempts++;
+          saveFailedAttempts();
+          if (failedAttempts >= MAX_FAILED_ATTEMPTS) {
+            isLockedOut = true;
+            lockoutStart = millis();
+            blinkLockout();
+          } else {
+            blinkFail();
+          }
+        }
+      }
+      
+      // Reset for next sequence
+      currentSequenceIndex = 0;
+      memset(currentInput, 0, sizeof(currentInput));
+    }
   }
 
   // Button just pressed

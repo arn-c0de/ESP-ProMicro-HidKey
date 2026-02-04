@@ -6,13 +6,13 @@ Multi-password HID keyboard emulator for Arduino Pro Micro Leonardo (ATmega32U4)
 
 - Multiple password combinations triggered by button sequences
 - Short press (< 500ms) = 0, Long press (>= 500ms) = 1
-- **AES-128-ECB encrypted password storage** in flash memory
-- **Per-device encryption key derivation** (master key XORed with unique device ID)
+- **Stage-1: AES-128-CBC** encryption with per-password random IV (stored in firmware)
+- **Stage-2: ChaCha20** per-device encryption using an HKDF-SHA256 derived key and a per-password nonce (stored in EEPROM)
 - **Persistent brute-force protection** with EEPROM storage (survives power cycles)
 - LED feedback for status indication
-- Configurable via .env file
-- No passwords in source code
-- **Enhanced RAM security** with multi-pass buffer clearing
+- Configurable via `.env` file (script will auto-create a template if missing)
+- No plaintext passwords in source code or VCS
+- **RAM hygiene**: multi-pass buffer clearing and AES/ChaCha context zeroing
 
 ## Hardware Requirements
 
@@ -154,27 +154,28 @@ After flashing:
 
 ### Two-Stage Encryption System
 
-This project implements a **two-stage encryption architecture** for enhanced security:
+This project implements a **two-stage encryption architecture** to reduce attack surface and provide device-unique protection:
 
 #### Stage 1: Build-Time Encryption (Python)
-- Passwords are encrypted with AES-128-ECB using the master key from `.env`
-- Encrypted data is marked with flag `0x01` and embedded in firmware
-- Master key is also stored in firmware (PROGMEM)
+- Passwords are encrypted with **AES-128-CBC** (PKCS#7 padding) using the master key from `.env`
+- A random 16-byte IV is generated per password and prepended to the ciphertext
+- Encrypted data is marked with flag `0x01` and embedded in firmware (`embedded_passwords.h`)
+- Master key remains in PROGMEM (firmware)
 
 #### Stage 2: First-Boot Re-Encryption (ESP Device)
-- On first boot, device generates unique 16-byte Device ID (stored in EEPROM)
-- Device-specific key is derived: `Master Key XOR Device ID`
-- Stage-1 encrypted passwords are:
-  1. Decrypted using master key
-  2. Re-encrypted using device-specific key (XOR-based)
+- On first boot, the device generates a 16-byte Device ID (stored in EEPROM) using improved entropy sampling
+- A device-specific 32-byte key is derived with **HKDF-SHA256** from (Master Key || Device ID)
+- Stage-1 entries are:
+  1. Decrypted using AES-CBC with the stored IV and the master key
+  2. Re-encrypted using **ChaCha20** with a random 12-byte nonce (nonce stored alongside ciphertext)
   3. Marked with flag `0x02` and stored in EEPROM
-- Master key remains in flash but is no longer used for password access
+- The derived key is kept only in RAM and cleared after use
 
 #### Benefits
-- **Device-Unique Encryption**: Each device has different encrypted passwords, even with same firmware
-- **Extraction Resistance**: Reading flash gives stage-1 data, but requires device's EEPROM to decrypt
-- **No Plaintext Storage**: Passwords are never stored in plaintext anywhere
-- **Runtime Isolation**: Only device-specific encrypted passwords are loaded in RAM
+- **Device-Unique Encryption**: Each device circulates independent stage-2 ciphertexts even with identical firmware
+- **Improved cryptography**: CBC prevents block-pattern leaks; ChaCha20 avoids repeating-key XOR weaknesses and adds performance
+- **Better key derivation**: HKDF replaces insecure XOR derivation
+- **No plaintext stored persistently**: plaintext exists only briefly in RAM during processing and is zeroed promptly
 
 **Memory Security:**
 - Passwords stored encrypted in flash (stage-1) and EEPROM (stage-2)
@@ -319,11 +320,12 @@ Change pins if needed:
 
 ### Password Storage
 
-Passwords are stored in PROGMEM (flash memory) to save SRAM:
-- Sequences: Byte arrays in flash
-- Passwords: XOR-encoded byte arrays in flash
-- Only active password temporarily copied to SRAM
-- SRAM buffer cleared immediately after use using volatile pointers
+Passwords are stored encrypted to minimize persistent exposure:
+- Sequences: Byte arrays in flash (PROGMEM)
+- Stage-1 (Flash): `flag(0x01) || IV(16B) || AES-CBC ciphertext`
+- Stage-2 (EEPROM): `flag(0x02) || Nonce(12B) || ChaCha20 ciphertext`
+- Only the active password is decrypted to SRAM briefly during typing
+- All sensitive buffers and crypto contexts are cleared immediately after use (multi-pass clearing)
 
 ### Constant-Time Comparison
 
@@ -348,16 +350,16 @@ Sequence matching uses bitwise XOR accumulation to prevent timing attacks that c
 The `generate_password_header.py` script:
 - Reads `.env` configuration
 - Validates sequences (0/1 only, max length 20)
-- XOR-encodes passwords
-- Generates C header with PROGMEM arrays
-- Runs automatically during build
+- Encrypts each password with **AES-128-CBC** using the master key and a random IV
+- Prepends a stage-1 flag (0x01) followed by the IV then ciphertext in the generated header
+- Runs automatically during build (the build script creates a `.env` template if missing)
 
 ## Known Limitations
 
 1. **Buffer Size**: Maximum 20 button presses per sequence
 2. **Password Length**: Maximum 63 characters (64 byte buffer)
 3. **Sequence Ambiguity**: If one sequence is a prefix of another (e.g., "0,1" and "0,1,0"), the shorter sequence will match first
-4. **No Persistent Lockout**: Brute-force counter resets on power cycle
+4. **Hardware Key Protection**: Master key is stored in firmware (PROGMEM) and the ATmega32U4 lacks a hardware secure element or read-protection — physical access can lead to compromise
 5. **Blocking LED**: LED animations block button input during display
 6. **No Debouncing**: Basic button handling without hardware debouncing
 
