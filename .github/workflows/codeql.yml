@@ -51,6 +51,12 @@ jobs:
           arduino-cli core install arduino:avr
           arduino-cli lib install Keyboard
 
+      - name: Generate test passwords header
+        run: |
+          cp .env.example .env
+          pip install pycryptodomex
+          python generate_password_header.py
+
       - name: Compile sketch
         run: |
           arduino-cli compile --fqbn arduino:avr:leonardo ESP-ProMicro-HidKey.ino
