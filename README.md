@@ -82,7 +82,7 @@ brew install arduino-cli
 
 **3. Clone Repository:**
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/arn-c0de/ESP-ProMicro-HidKey
 cd ESP-ProMicro-HidKey
 ```
 
