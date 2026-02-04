@@ -1,95 +1,114 @@
 # ESP-ProMicro-HidKey
 
-Multi-password HID keyboard emulator for Arduino Pro Micro Leonardo (ATmega32U4). Different button press sequences trigger different passwords via USB keyboard emulation.
+A multi-password HID keyboard emulator for Arduino Pro Micro Leonardo (ATmega32U4) that triggers different passwords via USB keyboard emulation using button press sequences.
+
+## Overview
+
+This project implements a secure, sequence-based password manager on microcontroller hardware. Different combinations of short and long button presses unlock and transmit distinct passwords through USB keyboard emulation, protected by a two-stage encryption system.
 
 ## Features
 
-- Multiple password combinations triggered by button sequences
-- Short press (< 500ms) = 0, Long press (>= 500ms) = 1
-- **Stage-1: AES-128-CBC** encryption with per-password random IV (stored in firmware)
-- **Stage-2: ChaCha20** per-device encryption using an HKDF-SHA256 derived key and a per-password nonce (stored in EEPROM)
-- **Persistent brute-force protection** with EEPROM storage (survives power cycles)
-- LED feedback for status indication
-- Configurable via `.env` file (script will auto-create a template if missing)
-- No plaintext passwords in source code or VCS
-- **RAM hygiene**: multi-pass buffer clearing and AES/ChaCha context zeroing
+- **Sequence-Based Activation**: Multiple password combinations triggered by button press patterns
+  - Short press (< 500ms) = `0` | Long press (≥ 500ms) = `1`
+- **Two-Stage Encryption Architecture**:
+  - **Stage 1** (Build-Time): AES-128-CBC with per-password random IV (firmware storage)
+  - **Stage 2** (First-Boot): ChaCha20 per-device re-encryption using HKDF-SHA256 derived keys (EEPROM storage)
+- **Persistent Brute-Force Protection**: Survives power cycles and device resets
+- **Memory Security**: Multi-pass buffer clearing and automatic crypto context zeroing
+- **LED Feedback**: Real-time status indicators for user actions
+- **Configuration Management**: Simple `.env` file configuration (auto-generated if missing)
+- **No Plaintext Storage**: Passwords never appear in source code or version control
 
-## Hardware Requirements
+## Getting Started
 
-### Components
+### Requirements
+
+#### Hardware
 
 - Arduino Pro Micro Leonardo (ATmega32U4, 5V/16MHz)
-- 1x Pushbutton
-- 1x LED (any color)
-- 1x 220 Ohm resistor (for LED)
+- 1× Pushbutton switch
+- 1× LED (any color)
+- 1× 220Ω resistor (LED current limiting)
 - Breadboard and jumper wires
 
-### Wiring Diagram
+#### Wiring
 
 ```
 Pro Micro Pin    Component
-=============    =========================================
-GND         ---- Button (one side)
-Pin 9       ---- Button (other side)
-Pin 10      ---- LED anode (+) via 220 Ohm resistor
-GND         ---- LED cathode (-)
+─────────────    ─────────────────────────────────
+GND              Button (first terminal)
+Pin 9            Button (second terminal)
+Pin 10           LED anode (+) via 220Ω resistor
+GND              LED cathode (-)
 ```
 
-### Pin Configuration
+**Pin Configuration:**
+- Button input: Pin 9 (with internal pullup)
+- LED output: Pin 10
 
-- `BUTTON_PIN 9` - Input with internal pullup
-- `LED_PIN 10` - Output for status LED
+#### Software
 
-## Software Requirements
+- **Python** 3.6+ with `pycryptodomex` library
+- **arduino-cli** (for building and flashing)
+- **SparkFun AVR board support** (installed via arduino-cli)
 
-- Python 3.6 or higher with **pycryptodomex** library
-- arduino-cli
-- SparkFun AVR board support
+### Installation
 
-### Installing Python Dependencies
-
+**1. Install Python Dependencies (Debian/Ubuntu/Kali):**
 ```bash
-# Debian/Ubuntu/Kali
 sudo apt install python3-pycryptodomex
+```
 
-# Or via pip (if not using system package manager)
+Or via pip:
+```bash
 pip3 install pycryptodomex --user
 ```
 
-### Installing arduino-cli
+**2. Install arduino-cli:**
 
 Linux/macOS:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
 ```
 
-Or install via package manager (apt, brew, etc.)
+Or via package manager:
+```bash
+# Debian/Ubuntu
+sudo apt install arduino-cli
 
-## Setup Instructions
+# macOS
+brew install arduino-cli
+```
 
-### 1. Clone Repository
-
+**3. Clone Repository:**
 ```bash
 git clone <your-repo-url>
-# AES-128 Master Key (32 hex characters = 16 bytes)
-# Generate with: python3 -c "import secrets; print(secrets.token_hex(16))"
-AES_MASTER_KEY=A7B3C9D2E8F41A6B5C7E9F2D4A8C1B3E
-
-COMBINATION_0_SEQUENCE="0,0,1,0"
-COMBINATION_0_PASSWORD="admin123"
-
-COMBINATION_1_SEQUENCE="1,0,0"
-COMBINATION_1_PASSWORD="user456"
-
-COMBINATION_2_SEQUENCE="0,1,1,0,1"
-COMBINATION_2_PASSWORD="password789"
+cd ESP-ProMicro-HidKey
 ```
 
-**AES Key Generation:**
+## Configuration
+
+### Setting Up Your Environment
+
+**1. Create Configuration File:**
+```bash
+cp .env.example .env
+nano .env  # or your preferred editor
+```
+
+**2. Generate AES Master Key:**
 ```bash
 python3 -c "import secrets; print(secrets.token_hex(16))"
+# Output example: a7b3c9d2e8f41a6b5c7e9f2d4a8c1b3e
 ```
-This generates a cryptographically secure random 128-bit key.BINATION_COUNT=3
+
+**3. Configure `.env` File:**
+```ini
+# AES-128 Master Key (32 hex characters = 16 bytes)
+AES_MASTER_KEY=a7b3c9d2e8f41a6b5c7e9f2d4a8c1b3e
+
+# Password combinations
+COMBINATION_COUNT=3
 
 COMBINATION_0_SEQUENCE="0,0,1,0"
 COMBINATION_0_PASSWORD="admin123"
@@ -103,170 +122,190 @@ COMBINATION_2_PASSWORD="password789"
 
 **Sequence Format:**
 - `0` = Short button press (< 500ms)
-- `1` = Long button press (>= 500ms)
+- `1` = Long button press (≥ 500ms)
 - Maximum sequence length: 20 presses
 - Separate presses with commas
 
-**Example:** Sequence "0,0,1,0" means:
+**Example:** Sequence `"0,0,1,0"` represents:
 1. Short press
 2. Short press
 3. Long press
 4. Short press
 
-### 3. Build and Flash
+### Building and Flashing
 
-Connect the Pro Micro via USB, then:
+**1. Connect Pro Micro via USB**
 
+**2. Build and Upload:**
 ```bash
 ./build.sh [port]
 ```
 
-The script will:
-1. Generate `embedded_passwords.h` from `.env`
-2. Compile the sketch
-3. Upload to the Pro Micro
+The build script automatically:
+- Generates `embedded_passwords.h` from `.env`
+- Compiles the sketch
+- Uploads to the device
 
-Default port is `/dev/ttyACM0`. Specify a different port if needed:
+**Default Port:** `/dev/ttyACM0`
+
+**Custom Port Example:**
 ```bash
 ./build.sh /dev/ttyACM1
 ```
 
-If upload fails, press the reset button on the Pro Micro twice quickly to enter bootloader mode, then run the script again immediately.
+**Upload Troubleshooting:**
+If upload fails, enter bootloader mode:
+1. Press the reset button on Pro Micro twice quickly
+2. Run `./build.sh` immediately (within 8 seconds)
 
-### 4. Usage
+### Basic Operation
 
 After flashing:
-1. Connect Pro Micro to target computer
-2. Enter the button sequence for desired password
-3. Password will be typed automatically when sequence matches
-4. 3-second timeout between presses before sequence resets
+1. Connect the Pro Micro to your target computer
+2. Enter the configured button sequence
+3. The password is automatically typed via USB keyboard emulation
+4. 3-second timeout resets the sequence if no input is received
 
 ## LED Status Indicators
 
-| Pattern | Meaning |
-|---------|---------|
-| 4 quick blinks | Password matched and sent successfully |
-| Solid for 2 seconds | Invalid sequence / no match |
-| 10 very fast blinks | Brute-force lockout activated |
-| 2 quick blinks at startup | Device ready (stage-2 encryption completed) |
+| LED Pattern | Meaning |
+|---|---|
+| 4 quick blinks | Password matched and transmitted successfully |
+| Solid 2-second glow | Invalid sequence or no match found |
+| 10 rapid blinks | Brute-force lockout activated |
+| 2 quick blinks (startup) | Device ready (stage-2 encryption initialized) |
 
 ## Security Architecture
 
-### Two-Stage Encryption System
+This project implements a **two-stage encryption system** to minimize attack surface while providing device-unique protection for each deployed instance.
 
-This project implements a **two-stage encryption architecture** to reduce attack surface and provide device-unique protection:
+### Two-Stage Encryption
 
 #### Stage 1: Build-Time Encryption (Python)
-- Passwords are encrypted with **AES-128-CBC** (PKCS#7 padding) using the master key from `.env`
-- A random 16-byte IV is generated per password and prepended to the ciphertext
-- Encrypted data is marked with flag `0x01` and embedded in firmware (`embedded_passwords.h`)
-- Master key remains in PROGMEM (firmware)
 
-#### Stage 2: First-Boot Re-Encryption (ESP Device)
-- On first boot, the device generates a 16-byte Device ID (stored in EEPROM) using improved entropy sampling
-- A device-specific 32-byte key is derived with **HKDF-SHA256** from (Master Key || Device ID)
+Executed during the build process to protect passwords before firmware deployment:
+
+- Passwords encrypted with **AES-128-CBC** (PKCS#7 padding) using the master key from `.env`
+- A cryptographically random 16-byte IV generated per password and prepended to ciphertext
+- Encrypted data marked with flag `0x01` and embedded in firmware (`embedded_passwords.h`)
+- Master key stored in PROGMEM (flash memory)
+
+#### Stage 2: First-Boot Device Re-Encryption
+
+Executed on device first power-on to create device-specific encryption:
+
+- Device generates unique 16-byte Device ID (stored in EEPROM) using improved entropy sampling
+- Device-specific 32-byte key derived via **HKDF-SHA256** from `(Master Key || Device ID)`
 - Stage-1 entries are:
-  1. Decrypted using AES-CBC with the stored IV and the master key
-  2. Re-encrypted using **ChaCha20** with a random 12-byte nonce (nonce stored alongside ciphertext)
+  1. Decrypted using AES-CBC with stored IV and master key
+  2. Re-encrypted using **ChaCha20** with cryptographically random 12-byte nonce
   3. Marked with flag `0x02` and stored in EEPROM
-- The derived key is kept only in RAM and cleared after use
+- Derived key kept only in RAM and cleared after re-encryption
 
-#### Benefits
-- **Device-Unique Encryption**: Each device circulates independent stage-2 ciphertexts even with identical firmware
-- **Improved cryptography**: CBC prevents block-pattern leaks; ChaCha20 avoids repeating-key XOR weaknesses and adds performance
-- **Better key derivation**: HKDF replaces insecure XOR derivation
-- **No plaintext stored persistently**: plaintext exists only briefly in RAM during processing and is zeroed promptly
+### Security Benefits
 
-**Memory Security:**
+| Aspect | Benefit |
+|---|---|
+| **Device-Unique Protection** | Each device holds independent stage-2 ciphertexts even with identical firmware |
+| **Cryptographic Strength** | CBC prevents block-pattern leakage; ChaCha20 avoids XOR-based weaknesses |
+| **Key Derivation** | HKDF-SHA256 replaces insecure XOR operations with standard KDF |
+| **Persistent Storage** | Plaintext only briefly in RAM during processing, immediately cleared |
+
+### Memory Security Practices
+
 - Passwords stored encrypted in flash (stage-1) and EEPROM (stage-2)
-- Only decrypted into RAM during transmission
-- RAM buffer cleared with 3-pass overwrite (0xFF, 0xAA, 0x00)
-- AES context cleared from RAM after use
+- Plaintext only decrypted into RAM during keyboard transmission
+- RAM buffers cleared via 3-pass overwrite (0xFF → 0xAA → 0x00)
+- AES and ChaCha20 contexts zeroed after use
 - Plaintext passwords never in source code or version control
 
 ### Persistent Brute-Force Protection
 
 - Failed attempt counter stored in EEPROM
 - **Survives power cycles and device resets**
-- Maximum 5 failed attempts before 30-second lockout
-- Counter persists across reboots (no reset bypass)
-- Only successful password entry resets counter
+- Threshold: Maximum 5 failed attempts
+- Lockout duration: 30 seconds
+- Counter only resets on successful password entry
+- No bypass via simple reset
 
-### WARNING: Physical Access Limitations
+### Threat Model and Limitations
 
-Despite improvements, physical security limitations still exist:
-
-1. **Flash Access**: Stage-1 encrypted data and master key are in flash memory
-   - Attackers can read flash via ISP or chip extraction
-   - However, they still need the device's EEPROM for stage-2 decryption
-
-2. **EEPROM Access**: Device ID and stage-2 passwords stored in EEPROM
-   - Combined flash + EEPROM access allows full compromise
-   - Destroying EEPROM makes extracted firmware useless
-
-3. **No Hardware Security Module**: ATmega32U4 has no:
-   - Secure boot
-   - Flash/EEPROM read protection
-   - Trusted execution environment
-
-4. **Side-Channel Attacks**: Power analysis or timing attacks may reveal keys
-   - Constant-time comparison mitigates timing attacks on sequence matching
-   - Power analysis during decryption still possible
-
-### Threat Model & Recommendations
-
-**Protected Against:**
-- ✅ Firmware extraction alone (needs EEPROM too)
-- ✅ Replay attacks via USB sniffing
+#### Protected Against
+- ✅ Firmware extraction alone (stage-2 requires EEPROM)
+- ✅ USB replay attacks via keyboard sniffing
 - ✅ Timing attacks on sequence matching
-- ✅ Reset-based brute-force bypass
-- ✅ RAM dumps after power-off (multi-pass clearing)
+- ✅ Brute-force bypass via device reset
+- ✅ RAM recovery from powered-off device
 
-**NOT Protected Against:**
-- ❌ Physical device compromise with both flash + EEPROM access
+#### Not Protected Against
+- ❌ Combined flash + EEPROM physical extraction
 - ❌ Sophisticated hardware attacks (power analysis, fault injection)
-- ❌ Rubber-hose cryptanalysis (physical coercion)
+- ❌ Physical coercion
 
-**Best Practices:**
+#### Design Principles
+
+This device relies on:
+1. **Physical Security**: Secure storage/location
+2. **Knowledge Factor**: Memorized button sequences
+3. **Possession Factor**: Device ownership
+
+**⚠️ Warning:** The ATmega32U4 lacks hardware security features:
+- No secure boot mechanism
+- No flash/EEPROM read protection
+- No trusted execution environment
+- Side-channel attacks (power analysis, timing) possible with specialized equipment
+
+**Recommendations:**
 - Use only in physically secure environments
-- Do not use for high-security/critical applications
-- Treat stolen device as fully compromised
-- Consider device as "two-factor" (possession + sequence knowledge)
-- For critical use: add external tamper detection or destruction mechanism
-
-
-- The primary security model relies on:
-  - Physical device security
-  - Memorized button sequences (something you know)
-  - Device possession (something you have)
+- Treat a stolen device as fully compromised
+- Do not use for critical high-security applications
+- Consider device as two-factor authentication complement (possession + sequence knowledge)
+- For critical applications: implement additional tamper detection or destruction mechanisms
 
 ## Troubleshooting
 
-### Upload Failed
+### Upload Fails
 
-1. Press the reset button on Pro Micro twice quickly
-2. Run `./build.sh` immediately (within 8 seconds)
-3. Check serial port: `ls /dev/ttyACM*` or `ls /dev/ttyUSB*`
-4. Add user to dialout group: `sudo usermod -a -G dialout $USER` (then logout/login)
+**Problem:** Sketch does not upload to device
 
-### Compilation Failed
+**Solutions:**
+1. Manually trigger bootloader: Press reset button twice quickly
+2. Immediately run `./build.sh` (within 8 seconds)
+3. Verify serial port: `ls /dev/ttyACM*` or `ls /dev/ttyUSB*`
+4. Grant user permissions: `sudo usermod -a -G dialout $USER` (then logout/login)
 
-1. Verify arduino-cli is installed: `arduino-cli version`
+### Compilation Fails
+
+**Problem:** Build script reports compilation errors
+
+**Solutions:**
+1. Verify arduino-cli: `arduino-cli version`
 2. Check Python version: `python3 --version` (requires 3.6+)
-3. Ensure `.env` file exists and is properly formatted
-4. Check for syntax errors in `.env` file
+3. Validate `.env` exists: `test -f .env || echo "Missing .env"`
+4. Check `.env` syntax (no spaces around `=`, proper quotes)
 
-### Wrong Port
+### Port Not Found
 
-- Linux: Usually `/dev/ttyACM0` or `/dev/ttyACM1`
-- macOS: `/dev/cu.usbmodem*` (use tab completion)
-- Windows: `COM3`, `COM4`, etc. (check Device Manager)
+**Solutions by Platform:**
+- **Linux**: Usually `/dev/ttyACM0` or `/dev/ttyACM1`
+- **macOS**: Use tab completion with `/dev/cu.usbmodem*`
+- **Windows**: Check Device Manager; typically `COM3` or `COM4`
 
-### No .env File
+List all ports:
+```bash
+# Linux
+ls /dev/ttyUSB* /dev/ttyACM* 2>/dev/null
 
-Copy `.env.example` to `.env` and customize:
+# macOS
+ls /dev/cu.* 2>/dev/null
+```
+
+### Configuration File Missing
+
+**Solution:**
 ```bash
 cp .env.example .env
+# Edit .env with your settings
 nano .env
 ```
 
@@ -274,126 +313,207 @@ nano .env
 
 ```
 ESP-ProMicro-HidKey/
-├── ESP-ProMicro-Test.ino       # Main Arduino sketch with AES decryption
-├── aes.h                        # Minimal AES-128-ECB implementation
-├── embedded_passwords.h         # Auto-generated (AES-encrypted passwords)
-├── generate_password_header.py  # Password encryption generator (AES)
-├── button.h                     # Button handler module (optional)
-├── led.h                        # LED controller module (optional)
-├── build.sh                     # Build and flash script
-├── .env                         # Your password config (gitignored)
-├── .env.example                 # Example configuration
-├── .gitignore                   # Git ignore rules
-└── README.md                    # This file
+├── ESP-ProMicro-HidKey.ino      # Main Arduino sketch
+├── aes.h                         # AES-128-CBC implementation
+├── chacha20.h                    # ChaCha20 stream cipher
+├── sha256.h                      # SHA-256 hash function
+├── embedded_passwords.h          # Auto-generated encrypted passwords
+├── embedded_passwords_eeprom.h   # Auto-generated stage-2 encryption data
+├── generate_password_header.py   # Password encryption generator
+├── build.sh                      # Build and flash automation script
+├── build_config.h                # Compile-time configuration
+├── .env                          # Your password configuration (gitignored)
+├── .env.example                  # Example configuration template
+├── .gitignore                    # Git ignore rules
+├── README.md                     # This file
+├── SECURITY_UPGRADE.md           # Security implementation details
+└── LICENSE                       # Project license
 ```
 
-## Configuration
+### Key Files
 
-### Timing Constants
+| File | Purpose |
+|---|---|
+| `ESP-ProMicro-HidKey.ino` | Main application logic, sequence matching, LED control |
+| `aes.h` | Stage-1 AES-128-CBC encryption/decryption |
+| `chacha20.h` | Stage-2 ChaCha20 stream cipher |
+| `sha256.h` | HKDF-SHA256 key derivation |
+| `generate_password_header.py` | Reads `.env`, encrypts passwords, generates headers |
+| `build.sh` | Orchestrates build process, password generation, upload |
 
-Edit in `ESP-ProMicro-Test.ino`:
+## Customization
+
+### Timing Configuration
+
+Edit timing constants in `ESP-ProMicro-HidKey.ino`:
 
 ```cpp
-#define LONG_PRESS_MS 500       // Long press threshold (ms)
-#define TIMEOUT_MS 3000         // Sequence timeout (ms)
-#define MAX_FAILED_ATTEMPTS 5   // Attempts before lockout
-#define LOCKOUT_MS 30000        // Lockout duration (ms)
+#define LONG_PRESS_MS 500       // Long press threshold (milliseconds)
+#define TIMEOUT_MS 3000         // Sequence timeout (milliseconds)
+#define MAX_FAILED_ATTEMPTS 5   // Failed attempts before lockout
+#define LOCKOUT_MS 30000        // Lockout duration (milliseconds)
 #define MAX_SEQUENCE_LENGTH 20  // Maximum button presses per sequence
 ```
 
-### Pin Assignment
+### Pin Configuration
 
-Change pins if needed:
+Change hardware pins in `ESP-ProMicro-HidKey.ino`:
 
 ```cpp
-#define LED_PIN 10
-#define BUTTON_PIN 9
+#define LED_PIN 10       // LED output pin
+#define BUTTON_PIN 9     // Button input pin
 ```
+
+### Adding More Passwords
+
+**Without recompilation:**
+1. Update `.env`: increment `COMBINATION_COUNT`
+2. Add new entries:
+   ```ini
+   COMBINATION_3_SEQUENCE="1,1,0"
+   COMBINATION_3_PASSWORD="newpassword123"
+   ```
+3. Run `./build.sh` to regenerate headers and upload
 
 ## Technical Details
 
 ### Memory Usage
 
-- Flash: ~4-6KB (sketch + passwords)
-- SRAM: ~400 bytes (depends on password count)
-- ATmega32U4 has 32KB flash, 2.5KB SRAM
+- **Flash**: ~8-10KB (sketch + stage-1 encrypted passwords)
+- **SRAM**: ~400 bytes (runtime buffers, depends on password count)
+- **EEPROM**: ~500 bytes (device ID + stage-2 encrypted passwords + brute-force counter)
+- **ATmega32U4 Specs**: 32KB flash, 2.5KB SRAM, 1KB EEPROM
 
-### Password Storage
+### Password Storage Architecture
 
-Passwords are stored encrypted to minimize persistent exposure:
-- Sequences: Byte arrays in flash (PROGMEM)
-- Stage-1 (Flash): `flag(0x01) || IV(16B) || AES-CBC ciphertext`
-- Stage-2 (EEPROM): `flag(0x02) || Nonce(12B) || ChaCha20 ciphertext`
-- Only the active password is decrypted to SRAM briefly during typing
-- All sensitive buffers and crypto contexts are cleared immediately after use (multi-pass clearing)
+**Stage 1 (Flash, included in firmware):**
+```
+[Flag: 0x01] [IV: 16 bytes] [AES-CBC ciphertext: variable length]
+```
 
-### Constant-Time Comparison
+**Stage 2 (EEPROM, device-specific):**
+```
+[Flag: 0x02] [Nonce: 12 bytes] [ChaCha20 ciphertext: variable length]
+```
 
-Sequence matching uses bitwise XOR accumulation to prevent timing attacks that could reveal partial matches through execution time differences.
+**Runtime Processing:**
+1. Only active password decrypted into SRAM
+2. Plaintext transmitted to USB
+3. Buffer immediately cleared via 3-pass overwrite
 
-## Development
+### Sequence Matching
 
-### Modifying Code
+Uses constant-time bitwise XOR accumulation to prevent timing attacks that could leak partial sequence matches through execution time measurements.
 
-1. Edit `.env` for password changes (no recompilation needed)
-2. Edit `ESP-ProMicro-Test.ino` for logic changes
-3. Run `./build.sh` to compile and upload
+### Key Derivation (Stage 2)
 
-### Adding More Passwords
+HKDF-SHA256 derives device-specific encryption key:
+```
+PRK = HMAC-SHA256(salt=0x00x00..., IKM = MasterKey || DeviceID)
+OKM = HMAC-SHA256(PRK, info="ESP-ProMicro-HidKey" || 0x01, length=32)
+```
 
-1. Increment `COMBINATION_COUNT` in `.env`
-2. Add new `COMBINATION_N_SEQUENCE` and `COMBINATION_N_PASSWORD` entries
-3. Run `./build.sh`
+Result: 32-byte device-unique key (kept in RAM, cleared after use)
 
-### Python Script
+## Development Guide
+
+### Modifying Application Logic
+
+1. Edit `ESP-ProMicro-HidKey.ino` for behavior changes
+2. Recompile and upload: `./build.sh`
+3. No `.env` changes required for logic modifications
+
+### Changing Passwords
+
+No code changes needed:
+1. Update `.env` with new credentials
+2. Run `./build.sh` to regenerate encryption and upload
+3. Device re-encrypts stage-1 passwords on next boot
+
+### Build Process
+
+The `build.sh` script orchestrates:
+1. Validates `.env` configuration
+2. Runs `generate_password_header.py` to encrypt stage-1 passwords
+3. Compiles Arduino sketch with `arduino-cli`
+4. Uploads firmware to connected device
+5. Device performs stage-2 re-encryption on first boot
+
+### Python Generator Script
 
 The `generate_password_header.py` script:
-- Reads `.env` configuration
-- Validates sequences (0/1 only, max length 20)
-- Encrypts each password with **AES-128-CBC** using the master key and a random IV
-- Prepends a stage-1 flag (0x01) followed by the IV then ciphertext in the generated header
-- Runs automatically during build (the build script creates a `.env` template if missing)
+- Reads and validates `.env` configuration
+- Validates sequence format (0/1 only, max 20 presses)
+- Generates cryptographically random IVs
+- Encrypts each password with **AES-128-CBC**
+- Marks entries with stage-1 flag (0x01)
+- Outputs C header file with embedded encrypted data
+- Runs automatically during build
 
-## Known Limitations
+## Limitations
 
-1. **Buffer Size**: Maximum 20 button presses per sequence
-2. **Password Length**: Maximum 63 characters (64 byte buffer)
-3. **Sequence Ambiguity**: If one sequence is a prefix of another (e.g., "0,1" and "0,1,0"), the shorter sequence will match first
-4. **Hardware Key Protection**: Master key is stored in firmware (PROGMEM) and the ATmega32U4 lacks a hardware secure element or read-protection — physical access can lead to compromise
-5. **Blocking LED**: LED animations block button input during display
-6. **No Debouncing**: Basic button handling without hardware debouncing
+| Limitation | Details |
+|---|---|
+| **Sequence Length** | Maximum 20 button presses per combination |
+| **Password Length** | Maximum 63 characters (64-byte buffer) |
+| **Sequence Prefix Matching** | If one sequence is a prefix of another (e.g., "0,1" and "0,1,0"), the shorter one triggers first |
+| **Hardware Security** | ATmega32U4 lacks secure boot, flash protection, or trusted execution environment |
+| **Blocking LED** | LED animations block button input during display |
+| **Button Debouncing** | Basic software-only debouncing; no hardware filtering |
+| **Microcontroller Scope** | Designed for ATmega32U4; modifications needed for other platforms |
 
-## Future Improvements
+## Known Issues and Roadmap
 
-Potential enhancements (not implemented):
+### Potential Improvements
 
-- EEPROM-based persistent lockout counter
-- Non-blocking LED state machine
-- Hardware button debouncing
-- Support for multiple buttons
-- Exponential backoff for failed attempts
-- Display integration for visual feedback
-- Modular code structure (separate .h/.cpp files)
+- [ ] Non-blocking LED state machine (allows button input during animations)
+- [ ] Hardware button debouncing circuit
+- [ ] Multiple button support
+- [ ] Exponential backoff for brute-force attempts
+- [ ] Display integration for visual feedback
+- [ ] EEPROM wear leveling for counter persistence
+- [ ] Modular code structure (separate compilation units)
+- [ ] Alternative input methods (capacitive touch, etc.)
+
+## Support and Contributions
+
+### Reporting Issues
+
+Please provide:
+- Device specifications (Arduino Pro Micro variant, USB interface)
+- Exact error messages and output
+- `.env` configuration (without sensitive passwords)
+- Operating system and relevant version numbers
+- Steps to reproduce the issue
+
+### Contributing
+
+Contributions are welcome. Please:
+1. Test thoroughly on actual hardware before submitting
+2. Follow existing code style and conventions
+3. Update documentation and comments
+4. Consider security implications of changes
+5. Add tests or validation where applicable
 
 ## License
 
-[Specify your license here - e.g., MIT, GPL, etc.]
-
-## Contributing
-
-Contributions welcome. Please:
-1. Test changes thoroughly on hardware
-2. Follow existing code style
-3. Update documentation
-4. Consider security implications
+[Specify your project license here]
 
 ## Disclaimer
 
-This project is provided as-is for educational and personal use. The authors take no responsibility for any security breaches, data loss, or misuse of this device. Use at your own risk. Do not use for applications requiring high security.
+This project is provided **as-is** for educational and personal use. The authors and contributors assume no responsibility for:
+- Security breaches or data exposure
+- Device malfunction or hardware damage
+- Loss of access to credentials or systems
+- Misuse of the device
 
-## Support
+**Use at your own risk.** This device is not suitable for protecting critical authentication credentials or high-security applications. Treat a compromised or stolen device as fully compromised.
 
-For issues, questions, or contributions:
-- Open an issue on GitHub
-- Check existing issues for solutions
-- Include hardware details and error messages
+## Security References
+
+For more information about cryptographic implementations and security practices:
+- [NIST SP 800-38A: Block Cipher Modes](https://nvlpubs.nist.gov/nistpubs/Legacy/SP/nistspecialpublication800-38a.pdf) (AES-CBC)
+- [ChaCha20 and Poly1305](https://tools.ietf.org/html/rfc7539) (IETF RFC 7539)
+- [HKDF: A Simpler Approach to Key Derivation](https://eprint.iacr.org/2010/264.pdf) (RFC 5869)
+
+See [SECURITY_UPGRADE.md](SECURITY_UPGRADE.md) for detailed encryption architecture documentation.

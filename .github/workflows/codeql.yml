@@ -10,7 +10,7 @@ on:
 
 jobs:
   analyze:
-    name: Analyze (${{ matrix.language }})
+    name: Analyze Python
     runs-on: ubuntu-latest
     timeout-minutes: 360
     permissions:
@@ -19,36 +19,36 @@ jobs:
       actions: read
       contents: read
 
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - language: python
-            build-mode: none
-          - language: c-cpp
-            build-mode: none
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: python
+          build-mode: none
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:python"
+
+  build-arduino:
+    name: Build Arduino
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Arduino CLI
-        if: matrix.language == 'c-cpp'
-        uses: arduino/setup-arduino-cli@v1
+        uses: arduino/setup-arduino-cli@v2
 
-      - name: Build Arduino sketch
-        if: matrix.language == 'c-cpp'
+      - name: Install board and libraries
         run: |
           arduino-cli core install arduino:avr
+          arduino-cli lib install Keyboard
+
+      - name: Compile sketch
+        run: |
           arduino-cli compile --fqbn arduino:avr:leonardo ESP-ProMicro-HidKey.ino
-
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
-        with:
-          languages: ${{ matrix.language }}
-          build-mode: ${{ matrix.build-mode }}
-
-      - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v3
-        with:
-          category: "/language:${{ matrix.language }}"
