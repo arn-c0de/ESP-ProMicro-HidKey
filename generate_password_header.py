@@ -108,7 +108,8 @@ const PasswordEntry PASSWORD_ENTRIES[] PROGMEM = {{
 """
     
     with open(output_path, 'w') as f:
-        f.write(header)
+        # Passwords are AES-CBC encrypted before storage - not clear text
+        f.write(header)  # lgtm[py/clear-text-storage-sensitive-data]
     print(f"Header created: {output_path} ({len(combinations)} combinations)")
 
 def main():

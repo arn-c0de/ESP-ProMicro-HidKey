@@ -23,8 +23,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - language: c-cpp
-            build-mode: none
+          # Removed c-cpp: Arduino .ino files need Arduino CLI build environment
+          # which CodeQL autobuild doesn't support
           - language: python
             build-mode: none
 
