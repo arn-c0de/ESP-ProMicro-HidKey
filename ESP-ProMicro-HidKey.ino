@@ -183,13 +183,33 @@ void performStage2ReEncryption() {
     // Stage-1 Decrypt: Use master key with CBC mode
     AES_CBC_decrypt(&masterCtx, iv, encBuffer, cipherLen);
     
+    // Remove PKCS#7 padding
+    // The last byte indicates how many padding bytes there are
+    if (cipherLen > 0) {
+      byte paddingLen = encBuffer[cipherLen - 1];
+      if (paddingLen > 0 && paddingLen <= 16 && paddingLen <= cipherLen) {
+        // Verify all padding bytes are correct
+        bool validPadding = true;
+        for (int j = cipherLen - paddingLen; j < cipherLen; j++) {
+          if (encBuffer[j] != paddingLen) {
+            validPadding = false;
+            break;
+          }
+        }
+        if (validPadding) {
+          cipherLen -= paddingLen;
+        }
+      }
+    }
+    
     // Now we have plaintext - generate random nonce for ChaCha20
     byte nonce[CHACHA20_NONCE_SIZE];
     for (int j = 0; j < CHACHA20_NONCE_SIZE; j++) {
       nonce[j] = random(256);
     }
     
-    int plaintextLen = entry.plaintext_len;
+    // The actual plaintext length after unpadding
+    int plaintextLen = cipherLen;
     
     // Stage-2 Encrypt: ChaCha20 with device-specific key
     ChaCha20_encrypt(encBuffer, plaintextLen, derivedKey, nonce, 0);

@@ -10,7 +10,29 @@ set -e
 ARDUINO_CLI="${ARDUINO_CLI:-arduino-cli}"
 SKETCH_DIR="$(dirname "$(realpath "$0")")"
 BOARD="arduino:avr:leonardo"
-PORT="${1:-/dev/ttyACM0}"
+
+# Default values
+PORT="/dev/ttyACM0"
+RESET_EEPROM=0
+
+# Parse arguments: -p|--port PORT and -r|--reset-eeprom
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -p|--port)
+      PORT="$2"
+      shift 2
+      ;;
+    -r|--reset-eeprom|-R)
+      RESET_EEPROM=1
+      shift
+      ;;
+    *)
+      # If a single positional arg is passed assume it's the port
+      PORT="$1"
+      shift
+      ;;
+  esac
+done
 
 echo "═══════════════════════════════════════════════════════════"
 echo "  ESP-ProMicro-HidKey v2.0 - Build Script"
@@ -78,6 +100,23 @@ cat > "$SKETCH_DIR/build_config.h" <<EOF
 EOF
 
 echo "🛠  Generated build_config.h (SEQUENCE_TIMEOUT_MS=${SEQ_TIMEOUT_MS})"
+
+# Optional: Reset EEPROM (force Stage-2 re-encryption) by uploading reset_eeprom.ino
+if [ "$RESET_EEPROM" -eq 1 ]; then
+    echo "🔁 Resetting EEPROM: compiling and uploading reset_eeprom.ino..."
+    $ARDUINO_CLI compile -v --fqbn "$BOARD" "$SKETCH_DIR/tools/reset_eeprom/reset_eeprom.ino"
+    if [ $? -ne 0 ]; then
+        echo "❌ Failed to compile reset_eeprom.ino"
+        exit 1
+    fi
+    $ARDUINO_CLI upload -v -p "$PORT" --fqbn "$BOARD" "$SKETCH_DIR/tools/reset_eeprom/reset_eeprom.ino"
+    if [ $? -ne 0 ]; then
+        echo "❌ Failed to upload reset_eeprom.ino"
+        exit 1
+    fi
+    echo "✅ EEPROM reset uploaded; waiting 2 seconds for it to run..."
+    sleep 2
+fi
 
 # Compile
 # Always use the main sketch file specifically (avoid compiling EEPROM_Clear.ino)

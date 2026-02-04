@@ -153,6 +153,22 @@ The build script automatically:
 ./build.sh /dev/ttyACM1
 ```
 
+🔁 **Optional: Reset EEPROM before uploading**
+If you need to force the device to re-run the Stage-2 re-encryption (for example after fixing padding or updating encryption logic), the build script provides a helper flag `--reset-eeprom` (short `-r`). This compiles and uploads a small helper sketch that clears the re-encryption flag in EEPROM, waits briefly, and then uploads the main sketch.
+
+Examples:
+```bash
+# Reset EEPROM and upload (default port /dev/ttyACM0)
+./build.sh -r
+
+# Reset EEPROM and upload to specific port
+./build.sh /dev/ttyACM1 -r
+```
+
+Notes:
+- The reset step is optional and safe for normal updates; it ensures stage-2 data is rebuilt on next boot.
+- Use with caution if you rely on existing device-specific stage-2 data.
+
 **Upload Troubleshooting:**
 If upload fails, enter bootloader mode:
 1. Press the reset button on Pro Micro twice quickly
