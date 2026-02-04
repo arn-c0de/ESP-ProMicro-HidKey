@@ -142,19 +142,44 @@ After flashing:
 4. 3-second timeout between presses before sequence resets
 
 ## LED Status Indicators
-Encryption Architecture
 
-**AES-128-ECB Encryption:**
-- Passwords are encrypted with AES-128 in ECB mode
-- Master key from `.env` is stored in flash (PROGMEM)
-- Each device generates a unique 16-byte ID on first boot (stored in EEPROM)
-- Actual decryption key = Master Key XOR Device ID
-- Makes each device's encryption unique, even with same master key
+| Pattern | Meaning |
+|---------|---------|
+| 4 quick blinks | Password matched and sent successfully |
+| Solid for 2 seconds | Invalid sequence / no match |
+| 10 very fast blinks | Brute-force lockout activated |
+| 2 quick blinks at startup | Device ready (stage-2 encryption completed) |
+
+## Security Architecture
+
+### Two-Stage Encryption System
+
+This project implements a **two-stage encryption architecture** for enhanced security:
+
+#### Stage 1: Build-Time Encryption (Python)
+- Passwords are encrypted with AES-128-ECB using the master key from `.env`
+- Encrypted data is marked with flag `0x01` and embedded in firmware
+- Master key is also stored in firmware (PROGMEM)
+
+#### Stage 2: First-Boot Re-Encryption (ESP Device)
+- On first boot, device generates unique 16-byte Device ID (stored in EEPROM)
+- Device-specific key is derived: `Master Key XOR Device ID`
+- Stage-1 encrypted passwords are:
+  1. Decrypted using master key
+  2. Re-encrypted using device-specific key (XOR-based)
+  3. Marked with flag `0x02` and stored in EEPROM
+- Master key remains in flash but is no longer used for password access
+
+#### Benefits
+- **Device-Unique Encryption**: Each device has different encrypted passwords, even with same firmware
+- **Extraction Resistance**: Reading flash gives stage-1 data, but requires device's EEPROM to decrypt
+- **No Plaintext Storage**: Passwords are never stored in plaintext anywhere
+- **Runtime Isolation**: Only device-specific encrypted passwords are loaded in RAM
 
 **Memory Security:**
-- Passwords stored encrypted in flash (PROGMEM)
+- Passwords stored encrypted in flash (stage-1) and EEPROM (stage-2)
 - Only decrypted into RAM during transmission
-- 64-byte RAM buffer cleared with 3-pass overwrite (0xFF, 0xAA, 0x00)
+- RAM buffer cleared with 3-pass overwrite (0xFF, 0xAA, 0x00)
 - AES context cleared from RAM after use
 - Plaintext passwords never in source code or version control
 
@@ -168,41 +193,47 @@ Encryption Architecture
 
 ### WARNING: Physical Access Limitations
 
-Despite improvements, this is still NOT cryptographically secure against physical attacks:
-| Pattern | Meaning |
-|---------|---------|
-| 4 quick blinks | Password matched and sent successfully |
-| Solid for 2 seconds | Invalid sequence / no match |
-| 10 very fast blinks | Brute-force lockout activated |
-| 2 quick blinks | Lockout ended, ready again |
+Despite improvements, physical security limitations still exist:
 
-## Security Considerations
+1. **Flash Access**: Stage-1 encrypted data and master key are in flash memory
+   - Attackers can read flash via ISP or chip extraction
+   - However, they still need the device's EEPROM for stage-2 decryption
 
-### WARNING: This is NOT Cryptographically Secure
+2. **EEPROM Access**: Device ID and stage-2 passwords stored in EEPROM
+   - Combined flash + EEPROM access allows full compromise
+   - Destroying EEPROM makes extracted firmware useless
 
-1. **XOR Obfuscation Only**: Passwords are XOR-encoded with a hardcoded key (0x5A). This provides minimal protection and is easily reversible with physical access to the device.
+3. **No Hardware Security Module**: ATmega32U4 has no:
+   - Secure boot
+   - Flash/EEPROM read protection
+   - Trusted execution environment
 
-2. **Physical Access = Full Compromise**: Anyone with physical access to the Pro Micro can:
-   - Read flash memory via ISP (In-System Programming)
-   - Extract the firmware binary
-   - Reverse the XOR encoding to recover all passwords
+4. **Side-Channel Attacks**: Power analysis or timing attacks may reveal keys
+   - Constant-time comparison mitigates timing attacks on sequence matching
+   - Power analysis during decryption still possible
 
-3. **No Secure Boot**: The ATmega32U4 has no secure boot or flash read protection features.
+### Threat Model & Recommendations
 
-4. **Timing Attacks Mitigated**: The code uses constant-time comparison to prevent timing-based attacks, but this provides limited protection given the physical access vulnerability.
+**Protected Against:**
+- ✅ Firmware extraction alone (needs EEPROM too)
+- ✅ Replay attacks via USB sniffing
+- ✅ Timing attacks on sequence matching
+- ✅ Reset-based brute-force bypass
+- ✅ RAM dumps after power-off (multi-pass clearing)
 
-### Brute-Force Protection
+**NOT Protected Against:**
+- ❌ Physical device compromise with both flash + EEPROM access
+- ❌ Sophisticated hardware attacks (power analysis, fault injection)
+- ❌ Rubber-hose cryptanalysis (physical coercion)
 
-- Maximum 5 failed sequence attempts
-- 30-second lockout after 5 failures
-- Lockout counter resets on successful password entry
-- Counter resets on power cycle (not persistent)
-
-### Recommendations
-
+**Best Practices:**
 - Use only in physically secure environments
-- Do not use for high-security applications
-- Consider this device as "easily compromised if stolen"
+- Do not use for high-security/critical applications
+- Treat stolen device as fully compromised
+- Consider device as "two-factor" (possession + sequence knowledge)
+- For critical use: add external tamper detection or destruction mechanism
+
+
 - The primary security model relies on:
   - Physical device security
   - Memorized button sequences (something you know)

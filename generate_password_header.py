@@ -53,18 +53,25 @@ def generate_header(combinations, aes_key, output_path):
         sequence_defs.append(f"const byte PROGMEM seq_{idx}[] = {{{seq_arr}}};")
         
         encrypted = aes_encrypt(comb['password'], aes_key)
-        pwd_arr = ", ".join(f"0x{b:02X}" for b in encrypted)
+        # Add stage-1 encryption flag (0x01) at the beginning
+        pwd_with_flag = [0x01] + encrypted
+        pwd_arr = ", ".join(f"0x{b:02X}" for b in pwd_with_flag)
         password_defs.append(f"const byte PROGMEM pwd_{idx}[] = {{{pwd_arr}}};")
         
         comma = "," if idx < len(combinations) - 1 else ""
-        seq_refs.append(f"  {{ .sequence = seq_{idx}, .sequence_len = {len(comb['sequence'])}, .password = pwd_{idx}, .password_len = {len(encrypted)}, .plaintext_len = {len(comb['password'])} }}{comma}")
+        seq_refs.append(f"  {{ .sequence = seq_{idx}, .sequence_len = {len(comb['sequence'])}, .password = pwd_{idx}, .password_len = {len(pwd_with_flag)}, .plaintext_len = {len(comb['password'])} }}{comma}")
     
     key_bytes = ', '.join(f'0x{int(aes_key[i:i+2], 16):02X}' for i in range(0, len(aes_key), 2))
     
     header = f"""// Auto-generiert von generate_password_header.py
+// Passwords are STAGE-1 encrypted (flag 0x01) with AES Master Key
+// ESP will decrypt and re-encrypt with device-specific key on first boot
 #ifndef EMBEDDED_PASSWORDS_H
 #define EMBEDDED_PASSWORDS_H
 #include <Arduino.h>
+
+#define ENCRYPTION_STAGE_1 0x01  // Encrypted with master key only
+#define ENCRYPTION_STAGE_2 0x02  // Re-encrypted with device-specific key
 
 const byte PROGMEM AES_MASTER_KEY[] = {{ {key_bytes} }};
 

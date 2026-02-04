@@ -18,6 +18,8 @@
 #define EEPROM_FAILED_ATTEMPTS_ADDR 16 // Failed attempts: 1 byte (16)
 #define EEPROM_MAGIC_ADDR 17           // Magic byte to check initialization (17)
 #define EEPROM_MAGIC_VALUE 0xA5        // Magic value indicating EEPROM is initialized
+#define EEPROM_REENCRYPT_DONE_ADDR 18  // Flag: Stage-2 re-encryption completed (18)
+#define EEPROM_PASSWORDS_START 32      // Start of re-encrypted passwords storage (32+)
 
 // Brute-force protection
 #define MAX_FAILED_ATTEMPTS 5
@@ -39,6 +41,15 @@ byte currentInput[MAX_SEQUENCE_LENGTH];
 
 // Device-specific encryption key (derived from master key + device ID)
 byte derivedKey[AES_KEYLEN];
+
+// Runtime storage for stage-2 encrypted passwords (loaded from EEPROM)
+// Max: 3 passwords * 64 bytes each = 192 bytes
+#define MAX_PASSWORD_BLOCK_SIZE 64
+#define MAX_PASSWORDS 10
+byte stage2Passwords[MAX_PASSWORDS][MAX_PASSWORD_BLOCK_SIZE];
+int stage2PasswordLengths[MAX_PASSWORDS];
+int stage2PlaintextLengths[MAX_PASSWORDS];
+bool stage2Ready = false;
 
 // ==================== Device ID & Key Derivation ====================
 void initializeDeviceID() {
@@ -69,11 +80,159 @@ void initializeDeviceID() {
 }
 
 void deriveEncryptionKey() {
-  // Read master key directly from PROGMEM (no device ID derivation)
-  // This matches the encryption in Python which uses the master key directly
+  // Derive device-specific key: Master Key XOR Device ID
+  byte masterKey[16];
+  byte deviceID[16];
+  
+  // Read master key from PROGMEM
   for (int i = 0; i < 16; i++) {
-    derivedKey[i] = pgm_read_byte(&AES_MASTER_KEY[i]);
+    masterKey[i] = pgm_read_byte(&AES_MASTER_KEY[i]);
   }
+  
+  // Read device ID from EEPROM
+  for (int i = 0; i < 16; i++) {
+    deviceID[i] = EEPROM.read(EEPROM_DEVICE_ID_ADDR + i);
+  }
+  
+  // XOR to create device-specific key
+  for (int i = 0; i < 16; i++) {
+    derivedKey[i] = masterKey[i] ^ deviceID[i];
+  }
+  
+  // Clear sensitive data
+  memset(masterKey, 0, 16);
+  memset(deviceID, 0, 16);
+}
+
+// ==================== Stage-2 Re-Encryption ====================
+/**
+ * Performs stage-2 re-encryption on first boot:
+ * 1. Decrypt passwords with master key (stage-1)
+ * 2. Re-encrypt with device-specific key (stage-2)
+ * 3. Store in EEPROM for future use
+ */
+void performStage2ReEncryption() {
+  digitalWrite(LED_PIN, HIGH);  // Visual feedback during re-encryption
+  
+  byte masterKey[16];
+  for (int i = 0; i < 16; i++) {
+    masterKey[i] = pgm_read_byte(&AES_MASTER_KEY[i]);
+  }
+  
+  AES_ctx masterCtx, deviceCtx;
+  AES_init_ctx(&masterCtx, masterKey);
+  AES_init_ctx(&deviceCtx, derivedKey);
+  
+  int eepromOffset = EEPROM_PASSWORDS_START;
+  
+  for (int i = 0; i < PASSWORD_ENTRY_COUNT; i++) {
+    PasswordEntry entry;
+    memcpy_P(&entry, &PASSWORD_ENTRIES[i], sizeof(PasswordEntry));
+    
+    byte encBuffer[MAX_PASSWORD_BLOCK_SIZE];
+    int encLen = entry.password_len;
+    
+    // Read stage-1 encrypted password from PROGMEM
+    for (int j = 0; j < encLen; j++) {
+      encBuffer[j] = pgm_read_byte(&entry.password[j]);
+    }
+    
+    // Check stage-1 flag (first byte should be 0x01)
+    if (encBuffer[0] != ENCRYPTION_STAGE_1) {
+      // Invalid format, skip
+      continue;
+    }
+    
+    // Remove flag byte, shift data
+    encLen--;
+    for (int j = 0; j < encLen; j++) {
+      encBuffer[j] = encBuffer[j + 1];
+    }
+    
+    // Stage-1 Decrypt: Use master key to decrypt
+    int blocks = (encLen + 15) / 16;
+    for (int b = 0; b < blocks; b++) {
+      AES_ECB_decrypt(&masterCtx, encBuffer + (b * 16));
+    }
+    
+    // Now we have plaintext - re-encrypt with device key using XOR
+    int plaintextLen = entry.plaintext_len;
+    
+    // Pad to 16-byte blocks
+    int paddedLen = ((plaintextLen + 15) / 16) * 16;
+    for (int j = plaintextLen; j < paddedLen; j++) {
+      encBuffer[j] = 0;
+    }
+    
+    // Stage-2 Encrypt: XOR with device-specific key
+    for (int j = 0; j < paddedLen; j++) {
+      encBuffer[j] ^= derivedKey[j % 16];
+    }
+    
+    // Add stage-2 flag
+    byte finalBuffer[MAX_PASSWORD_BLOCK_SIZE];
+    finalBuffer[0] = ENCRYPTION_STAGE_2;
+    for (int j = 0; j < paddedLen && j < MAX_PASSWORD_BLOCK_SIZE - 1; j++) {
+      finalBuffer[j + 1] = encBuffer[j];
+    }
+    
+    int finalLen = paddedLen + 1;
+    
+    // Store in EEPROM
+    for (int j = 0; j < finalLen; j++) {
+      EEPROM.write(eepromOffset + j, finalBuffer[j]);
+    }
+    
+    // Load into RAM for runtime use
+    stage2PasswordLengths[i] = finalLen;
+    stage2PlaintextLengths[i] = plaintextLen;
+    memcpy(stage2Passwords[i], finalBuffer, finalLen);
+    
+    eepromOffset += finalLen;
+    
+    // Security: Clear buffers
+    memset(encBuffer, 0, sizeof(encBuffer));
+    memset(finalBuffer, 0, sizeof(finalBuffer));
+  }
+  
+  // Mark re-encryption as done
+  EEPROM.write(EEPROM_REENCRYPT_DONE_ADDR, 0xEE);
+  stage2Ready = true;
+  
+  // Clear sensitive data
+  memset(masterKey, 0, 16);
+  memset(&masterCtx, 0, sizeof(masterCtx));
+  memset(&deviceCtx, 0, sizeof(deviceCtx));
+  
+  digitalWrite(LED_PIN, LOW);
+}
+
+/**
+ * Load stage-2 encrypted passwords from EEPROM into RAM
+ */
+void loadStage2Passwords() {
+  int eepromOffset = EEPROM_PASSWORDS_START;
+  
+  for (int i = 0; i < PASSWORD_ENTRY_COUNT; i++) {
+    PasswordEntry entry;
+    memcpy_P(&entry, &PASSWORD_ENTRIES[i], sizeof(PasswordEntry));
+    
+    // Calculate expected length based on plaintext
+    int plaintextLen = entry.plaintext_len;
+    int paddedLen = ((plaintextLen + 15) / 16) * 16;
+    int finalLen = paddedLen + 1;  // +1 for flag
+    
+    // Load from EEPROM
+    for (int j = 0; j < finalLen && j < MAX_PASSWORD_BLOCK_SIZE; j++) {
+      stage2Passwords[i][j] = EEPROM.read(eepromOffset + j);
+    }
+    
+    stage2PasswordLengths[i] = finalLen;
+    stage2PlaintextLengths[i] = plaintextLen;
+    eepromOffset += finalLen;
+  }
+  
+  stage2Ready = true;
 }
 
 void saveFailedAttempts() {
@@ -161,60 +320,56 @@ void executePassword(int entryIndex) {
   if (entryIndex < 0 || entryIndex >= PASSWORD_ENTRY_COUNT) {
     return;
   }
-
-  // Load entry from PROGMEM to RAM
-  PasswordEntry entry;
-  memcpy_P(&entry, &PASSWORD_ENTRIES[entryIndex], sizeof(PasswordEntry));
-
-  // AES decryption of password
-  char buffer[64];
-  byte encryptedBlock[AES_BLOCKLEN];
   
-  // Initialize AES context with derived key
-  struct AES_ctx ctx;
-  AES_init_ctx(&ctx, derivedKey);
-  
-  // Decrypt password (may span multiple AES blocks)
-  int numBlocks = (entry.password_len + AES_BLOCKLEN - 1) / AES_BLOCKLEN;
-  int decryptedLen = 0;
-  
-  for (int block = 0; block < numBlocks && decryptedLen < (int)sizeof(buffer) - 1; block++) {
-    // Read encrypted block from PROGMEM
-    for (int i = 0; i < AES_BLOCKLEN; i++) {
-      encryptedBlock[i] = pgm_read_byte(&entry.password[block * AES_BLOCKLEN + i]);
-    }
-    
-    // Decrypt block
-    AES_ECB_decrypt(&ctx, encryptedBlock);
-    
-    // Copy decrypted data to buffer (up to plaintext_len)
-    int copyLen = min(AES_BLOCKLEN, entry.plaintext_len - decryptedLen);
-    memcpy(buffer + decryptedLen, encryptedBlock, copyLen);
-    decryptedLen += copyLen;
-    
-    // Clear encrypted block from RAM
-    volatile byte* vptr_enc = (volatile byte*)encryptedBlock;
-    for (int i = 0; i < AES_BLOCKLEN; i++) {
-      vptr_enc[i] = 0;
-    }
+  if (!stage2Ready) {
+    // Stage-2 not ready, cannot execute
+    blinkFail();
+    return;
   }
-  buffer[decryptedLen] = '\0';
 
-  // Send password
-  Keyboard.print(buffer);
-
-  // Security: Clear buffer multiple times using volatile pointer
-  volatile char* vptr = (volatile char*)buffer;
-  for (int pass = 0; pass < 3; pass++) {
-    for (int i = 0; i < (int)sizeof(buffer); i++) {
-      vptr[i] = (pass == 0) ? 0xFF : ((pass == 1) ? 0xAA : 0x00);
-    }
+  // Use stage-2 encrypted password from RAM
+  byte decBuffer[MAX_PASSWORD_BLOCK_SIZE];
+  int encLen = stage2PasswordLengths[entryIndex];
+  int plaintextLen = stage2PlaintextLengths[entryIndex];
+  
+  memcpy(decBuffer, stage2Passwords[entryIndex], encLen);
+  
+  // Check stage-2 flag
+  if (decBuffer[0] != ENCRYPTION_STAGE_2) {
+    blinkFail();
+    memset(decBuffer, 0, sizeof(decBuffer));
+    return;
   }
   
-  // Clear AES context
-  volatile byte* ctx_ptr = (volatile byte*)&ctx;
-  for (int i = 0; i < (int)sizeof(ctx); i++) {
-    ctx_ptr[i] = 0;
+  // Remove flag
+  encLen--;
+  for (int i = 0; i < encLen; i++) {
+    decBuffer[i] = decBuffer[i + 1];
+  }
+  
+  // Decrypt with device-specific key (XOR)
+  for (int i = 0; i < encLen; i++) {
+    decBuffer[i] ^= derivedKey[i % 16];
+  }
+  
+  // Type password
+  Keyboard.begin();
+  for (int i = 0; i < plaintextLen; i++) {
+    Keyboard.write(decBuffer[i]);
+  }
+  Keyboard.end();
+  
+  // Security: Multi-pass clear
+  memset(decBuffer, 0xFF, sizeof(decBuffer));
+  memset(decBuffer, 0xAA, sizeof(decBuffer));
+  memset(decBuffer, 0x00, sizeof(decBuffer));
+  
+  blinkSuccess();
+  
+  // Reset brute-force counter on success
+  if (failedAttempts > 0) {
+    failedAttempts = 0;
+    saveFailedAttempts();
   }
 }
 
@@ -303,15 +458,36 @@ void processButtonPress(int pressType) {
 void setup() {
   pinMode(LED_PIN, OUTPUT);
   pinMode(BUTTON_PIN, INPUT_PULLUP);
+  
+  digitalWrite(LED_PIN, HIGH);
+  delay(500);
   digitalWrite(LED_PIN, LOW);
   
   Keyboard.begin();
   
-  // Initialize device ID and load persistent state
+  // Initialize device ID if first boot
   initializeDeviceID();
   
-  // Derive encryption key from master key + device ID
+  // Derive device-specific encryption key
   deriveEncryptionKey();
+  
+  // Check if stage-2 re-encryption was already performed
+  byte reencryptDone = EEPROM.read(EEPROM_REENCRYPT_DONE_ADDR);
+  
+  if (reencryptDone != 0xEE) {
+    // First boot or EEPROM was cleared: perform stage-2 re-encryption
+    performStage2ReEncryption();
+  } else {
+    // Load existing stage-2 passwords from EEPROM
+    loadStage2Passwords();
+  }
+  
+  // Load failed attempts from EEPROM
+  failedAttempts = EEPROM.read(EEPROM_FAILED_ATTEMPTS_ADDR);
+  if (failedAttempts > MAX_FAILED_ATTEMPTS) {
+    failedAttempts = 0;
+    saveFailedAttempts();
+  }
   
   currentSequenceIndex = 0;
   lastAction = millis();
@@ -321,6 +497,9 @@ void setup() {
     isLockedOut = true;
     lockoutStart = millis();
   }
+  
+  // Ready indicator
+  blinkSuccess(2);
 }
 
 void loop() {
