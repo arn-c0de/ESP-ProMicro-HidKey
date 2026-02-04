@@ -283,6 +283,8 @@ void saveFailedAttempts() {
   EEPROM.write(EEPROM_FAILED_ATTEMPTS_ADDR, failedAttempts);
 }
 
+// Character mapping removed — Keyboard is initialized with German layout (KeyboardLayout_de_DE) so raw bytes are sent directly.
+
 // ==================== LED Feedback ====================
 void blinkSuccess(int times = 4) {
   for (int i = 0; i < times; i++) {
@@ -306,6 +308,16 @@ void blinkLockout() {
     delay(50);
     digitalWrite(LED_PIN, LOW);
     delay(50);
+  }
+}
+
+void blinkReady() {
+  // 2x long blink: ready for new sequence
+  for (int i = 0; i < 2; i++) {
+    digitalWrite(LED_PIN, HIGH);
+    delay(500);
+    digitalWrite(LED_PIN, LOW);
+    delay(300);
   }
 }
 
@@ -398,8 +410,8 @@ void executePassword(int entryIndex) {
   // Decrypt with ChaCha20
   ChaCha20_decrypt(decBuffer, plaintextLen, derivedKey, nonce, 0);
   
-  // Type password
-  Keyboard.begin();
+  // Type password using German keyboard layout
+  Keyboard.begin(KeyboardLayout_de_DE);
   for (int i = 0; i < plaintextLen; i++) {
     Keyboard.write(decBuffer[i]);
   }
@@ -450,7 +462,7 @@ void setup() {
   delay(500);
   digitalWrite(LED_PIN, LOW);
   
-  Keyboard.begin();
+  Keyboard.begin(KeyboardLayout_de_DE);
   
   // Initialize device ID if first boot
   initializeDeviceID();
@@ -519,40 +531,19 @@ void loop() {
       if (matchIndex >= 0) {
         // Match found!
         executePassword(matchIndex);
-        blinkSuccess(4);
         failedAttempts = 0;
         saveFailedAttempts();
       } else {
-        // Check if valid prefix
-        bool couldMatch = false;
-        for (int i = 0; i < PASSWORD_ENTRY_COUNT; i++) {
-          PasswordEntry entry;
-          memcpy_P(&entry, &PASSWORD_ENTRIES[i], sizeof(PasswordEntry));
-          if (currentSequenceIndex > entry.sequence_len) continue;
-          
-          bool matchesStart = true;
-          for (int j = 0; j < currentSequenceIndex; j++) {
-            if (currentInput[j] != pgm_read_byte(&entry.sequence[j])) {
-              matchesStart = false;
-              break;
-            }
-          }
-          if (matchesStart) {
-            couldMatch = true;
-            break;
-          }
-        }
-        
-        if (!couldMatch) {
-          failedAttempts++;
-          saveFailedAttempts();
-          if (failedAttempts >= MAX_FAILED_ATTEMPTS) {
-            isLockedOut = true;
-            lockoutStart = millis();
-            blinkLockout();
-          } else {
-            blinkFail();
-          }
+        // No match - wrong sequence
+        failedAttempts++;
+        saveFailedAttempts();
+        if (failedAttempts >= MAX_FAILED_ATTEMPTS) {
+          isLockedOut = true;
+          lockoutStart = millis();
+          blinkLockout();
+        } else {
+          // Ready for new sequence: 2x long blink
+          blinkReady();
         }
       }
       
