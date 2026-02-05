@@ -25,11 +25,20 @@ This project implements a secure, sequence-based password manager on microcontro
 
 #### Hardware
 
-- Arduino Pro Micro Leonardo (ATmega32U4, 5V/16MHz)
-- 1× Pushbutton switch
-- 1× LED (any color)
-- 1× 220Ω resistor (LED current limiting)
-- Breadboard and jumper wires
+| Component               | Quantity | Notes / Purpose                       | Approx. Price (USD) |
+|-------------------------|---------|----------------------------------------|------------------|
+| ATmega32U4              | 1       | Main microcontroller                   | $5 - $10 (can be much cheaper in bulk or via AliExpress)         |
+| LED diode               | 1       | Status indicator                       | $0.10 - $0.50 (bulk packs or leftover components can be cheaper) |
+| Resistor  220Ω - 3KΩ    | 1       | Current limiting for LED               | $0.05 - $0.10 (often <$0.01 in bulk or from leftovers)           |
+| Push button             | 1       | User input                             | $0.20 - $1 (cheaper via AliExpress or bulk packs)                |
+| Heat shrink tube        | 1       | Insulation and cable protection        | $0.10 - $0.50 (bulk rolls are more cost-effective)               |
+| Wire pieces / cable|    |         | For connections between components     | $0.05 - $0.50 (often free from leftover wires or bulk rolls)     |
+
+**Notes:**  
+- Buying in higher quantities or using leftover/recycled parts can drastically reduce cost.  
+- AliExpress and similar suppliers usually offer significantly lower prices, especially for microcontrollers and common components.  
+- Total cost for a single prototype: ~$6 - $13, but can drop below $5 per unit when sourcing smartly.  
+
 
 #### Wiring
 
