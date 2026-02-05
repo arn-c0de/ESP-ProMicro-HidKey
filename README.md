@@ -42,6 +42,14 @@ Pin 10           LED anode (+) via 220Ω resistor
 GND              LED cathode (-)
 ```
 
+![Prototype backside wiring diagram](images/prototype-idea-backside.jpg)
+
+> *Note: This is an example image showing an older ATmega Pro Micro board — it may look a little rough. Newer boards may look different.*
+>
+> *After soldering, secure exposed contacts with hot glue or UV resin, and fully enclose the board in heat-shrink tubing or a 3D-printed case.*
+>
+
+
 **Pin Configuration:**
 - Button input: Pin 9 (with internal pullup)
 - LED output: Pin 10
