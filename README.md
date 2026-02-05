@@ -38,7 +38,7 @@ Pro Micro Pin    Component
 ─────────────    ─────────────────────────────────
 GND              Button (first terminal)
 Pin 9            Button (second terminal)
-Pin 10           LED anode (+) via 220Ω resistor
+Pin 10           LED anode (+) via 220Ω - 3kΩ resistor
 GND              LED cathode (-)
 ```
 
