@@ -58,18 +58,22 @@ PY
 AES_MASTER_KEY=${AES_KEY}
 COMBINATION_COUNT=1
 COMBINATION_0_SEQUENCE=0,1,0
+COMBINATION_0_TYPE=text
 COMBINATION_0_PASSWORD=your_password_here
+# Alternative for multiline secrets such as ASCII-armored GPG private keys:
+# COMBINATION_0_TYPE=gpg-private-key
+# COMBINATION_0_GPG_PRIVATE_KEY_FILE=./secrets/private.asc
 SEQUENCE_TIMEOUT_MS=3000  # milliseconds of inactivity before sequence recognition
 EOF
 
     echo "✅ Created $SKETCH_DIR/.env — edit COMBINATION_* or SEQUENCE_TIMEOUT_MS values before building"
 else
     # Step 1: Generate encrypted password header
-    echo "📝 Generating encrypted password header..."
+    echo "📝 Generating encrypted secret header..."
     cd "$SKETCH_DIR"
     python3 generate_password_header.py
     if [ $? -eq 0 ]; then
-        echo "✅ Generated: embedded_passwords.h (AES-CBC + ChaCha20)"
+        echo "✅ Generated: embedded_passwords.h (AES-CBC)"
     else
         echo "❌ Failed to generate password header"
         exit 1
@@ -103,7 +107,7 @@ echo "🛠  Generated build_config.h (SEQUENCE_TIMEOUT_MS=${SEQ_TIMEOUT_MS})"
 
 # Optional: Reset EEPROM (force Stage-2 re-encryption) by uploading reset_eeprom.ino
 if [ "$RESET_EEPROM" -eq 1 ]; then
-    echo "🔁 Resetting EEPROM: compiling and uploading reset_eeprom.ino..."
+    echo "🔁 Resetting EEPROM state: compiling and uploading reset_eeprom.ino..."
     $ARDUINO_CLI compile -v --fqbn "$BOARD" "$SKETCH_DIR/tools/reset_eeprom/reset_eeprom.ino"
     if [ $? -ne 0 ]; then
         echo "❌ Failed to compile reset_eeprom.ino"
@@ -152,23 +156,21 @@ if [ $? -eq 0 ]; then
     echo "═══════════════════════════════════════════════════════════"
     echo ""
     echo "🔄 First boot behavior:"
-    echo "   - LED will blink during Stage-2 re-encryption"
-    echo "   - Device ID generated with improved entropy"
-    echo "   - Passwords re-encrypted with ChaCha20"
+    echo "   - Device initializes lockout state in EEPROM"
+    echo "   - Encrypted entries remain in flash until requested"
     echo "   - Ready indicator: 2 blinks"
     echo ""
     echo "🎮 Usage:"
     echo "   - Enter button sequence (short/long presses)"
-    echo "   - Device will type password on match"
+    echo "   - Device will type the configured secret on match"
     echo "   - 3 seconds timeout between presses"
     echo ""
-    echo "🔒 Security improvements v2.0:"
+    echo "🔒 Active protection:"
     echo "   ✅ AES-CBC with IV (instead of ECB)"
-    echo "   ✅ ChaCha20 (instead of XOR)"
-    echo "   ✅ HKDF-SHA256 (instead of simple XOR)"
-    echo "   ✅ Better Device ID entropy"
+    echo "   ✅ No cleartext secrets in source or generated headers"
+    echo "   ✅ Multiline secrets supported via file import"
     echo ""
-    echo "📖 Read SECURITY_UPGRADE.md for details"
+    echo "📖 Review README.md for configuration details"
     echo ""
 else
     echo ""

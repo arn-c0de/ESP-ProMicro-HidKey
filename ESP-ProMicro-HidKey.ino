@@ -6,8 +6,6 @@
 #include <EEPROM.h>
 #include "embedded_passwords.h"
 #include "aes.h"
-#include "chacha20.h"
-#include "sha256.h"
 #include "build_config.h"
 
 #define LED_PIN 10
@@ -21,12 +19,9 @@
 #define MAX_SEQUENCE_LENGTH 20
 
 // EEPROM addresses
-#define EEPROM_DEVICE_ID_ADDR 0        // Device ID: 16 bytes (0-15)
-#define EEPROM_FAILED_ATTEMPTS_ADDR 16 // Failed attempts: 1 byte (16)
-#define EEPROM_MAGIC_ADDR 17           // Magic byte to check initialization (17)
+#define EEPROM_FAILED_ATTEMPTS_ADDR 0  // Failed attempts: 1 byte
+#define EEPROM_MAGIC_ADDR 1            // Magic byte to check initialization
 #define EEPROM_MAGIC_VALUE 0xA5        // Magic value indicating EEPROM is initialized
-#define EEPROM_REENCRYPT_DONE_ADDR 18  // Flag: Stage-2 re-encryption completed (18)
-#define EEPROM_PASSWORDS_START 32      // Start of re-encrypted passwords storage (32+)
 
 // Brute-force protection
 #define MAX_FAILED_ATTEMPTS 5
@@ -47,243 +42,106 @@ bool isLockedOut = false;
 // Buffer for current input sequence
 byte currentInput[MAX_SEQUENCE_LENGTH];
 
-// Device-specific encryption key (derived from master key + device ID)
-byte derivedKey[CHACHA20_KEY_SIZE];  // 32 bytes for ChaCha20
-
-// Runtime storage for stage-2 encrypted passwords (loaded from EEPROM)
-// Max: 3 passwords * 64 bytes each = 192 bytes
-#define MAX_PASSWORD_BLOCK_SIZE 64
-#define MAX_PASSWORDS 10
-byte stage2Passwords[MAX_PASSWORDS][MAX_PASSWORD_BLOCK_SIZE];
-int stage2PasswordLengths[MAX_PASSWORDS];
-int stage2PlaintextLengths[MAX_PASSWORDS];
-bool stage2Ready = false;
-
-// ==================== Device ID & Key Derivation ====================
-void initializeDeviceID() {
-  // Check if EEPROM is already initialized
-  if (EEPROM.read(EEPROM_MAGIC_ADDR) == EEPROM_MAGIC_VALUE) {
-    // Already initialized, load failed attempts counter
-    failedAttempts = EEPROM.read(EEPROM_FAILED_ATTEMPTS_ADDR);
-    if (failedAttempts > MAX_FAILED_ATTEMPTS) {
-      failedAttempts = 0; // Corrupted value, reset
-    }
-    return;
+void initializeStateStorage() {
+  if (EEPROM.read(EEPROM_MAGIC_ADDR) != EEPROM_MAGIC_VALUE) {
+    EEPROM.write(EEPROM_FAILED_ATTEMPTS_ADDR, 0);
+    EEPROM.write(EEPROM_MAGIC_ADDR, EEPROM_MAGIC_VALUE);
   }
-  
-  // First boot: Generate random device ID with improved entropy
-  // Use multiple entropy sources for better randomness
-  uint32_t seed = 0;
-  for (int i = 0; i < 4; i++) {
-    seed ^= analogRead(A0 + i);  // Multiple analog pins
-    seed ^= micros();
-    delay(10);
-  }
-  randomSeed(seed);
-  
-  for (int i = 0; i < 16; i++) {
-    byte randomByte = random(256);
-    EEPROM.write(EEPROM_DEVICE_ID_ADDR + i, randomByte);
-  }
-  
-  // Initialize failed attempts counter
-  EEPROM.write(EEPROM_FAILED_ATTEMPTS_ADDR, 0);
-  
-  // Set magic byte
-  EEPROM.write(EEPROM_MAGIC_ADDR, EEPROM_MAGIC_VALUE);
-  
-  failedAttempts = 0;
-}
-
-void deriveEncryptionKey() {
-  // Derive device-specific key using HKDF-SHA256 instead of simple XOR
-  byte masterKey[16];
-  byte deviceID[16];
-  
-  // Read master key from PROGMEM
-  for (int i = 0; i < 16; i++) {
-    masterKey[i] = pgm_read_byte(&AES_MASTER_KEY[i]);
-  }
-  
-  // Read device ID from EEPROM
-  for (int i = 0; i < 16; i++) {
-    deviceID[i] = EEPROM.read(EEPROM_DEVICE_ID_ADDR + i);
-  }
-  
-  // Combine master key and device ID as input key material
-  byte ikm[32];
-  memcpy(ikm, masterKey, 16);
-  memcpy(ikm + 16, deviceID, 16);
-  
-  // Use HKDF to derive 32-byte key (for ChaCha20)
-  const char* info = "ESP-ProMicro-HidKey-v2";
-  HKDF_SHA256(derivedKey, CHACHA20_KEY_SIZE, ikm, 32, (const uint8_t*)info, strlen(info));
-  
-  // Clear sensitive data
-  memset(masterKey, 0, 16);
-  memset(deviceID, 0, 16);
-  memset(ikm, 0, 32);
-}
-
-
-// ==================== Stage-2 Re-Encryption ====================
-/**
- * Performs stage-2 re-encryption on first boot:
- * 1. Decrypt passwords with master key (stage-1, AES-CBC)
- * 2. Re-encrypt with device-specific key (stage-2, ChaCha20)
- * 3. Store in EEPROM for future use
- */
-void performStage2ReEncryption() {
-  digitalWrite(LED_PIN, HIGH);  // Visual feedback during re-encryption
-  
-  byte masterKey[16];
-  for (int i = 0; i < 16; i++) {
-    masterKey[i] = pgm_read_byte(&AES_MASTER_KEY[i]);
-  }
-  
-  AES_ctx masterCtx;
-  AES_init_ctx(&masterCtx, masterKey);
-  
-  int eepromOffset = EEPROM_PASSWORDS_START;
-  
-  for (int i = 0; i < PASSWORD_ENTRY_COUNT; i++) {
-    PasswordEntry entry;
-    memcpy_P(&entry, &PASSWORD_ENTRIES[i], sizeof(PasswordEntry));
-    
-    byte encBuffer[MAX_PASSWORD_BLOCK_SIZE];
-    int encLen = entry.password_len;
-    
-    // Read stage-1 encrypted password from PROGMEM
-    for (int j = 0; j < encLen; j++) {
-      encBuffer[j] = pgm_read_byte(&entry.password[j]);
-    }
-    
-    // Check stage-1 flag (first byte should be 0x01)
-    if (encBuffer[0] != ENCRYPTION_STAGE_1) {
-      // Invalid format, skip
-      continue;
-    }
-    
-    // Remove flag byte, shift data
-    encLen--;
-    for (int j = 0; j < encLen; j++) {
-      encBuffer[j] = encBuffer[j + 1];
-    }
-    
-    // Next 16 bytes are IV, rest is ciphertext
-    byte iv[16];
-    memcpy(iv, encBuffer, 16);
-    int cipherLen = encLen - 16;
-    
-    // Move ciphertext to beginning of buffer
-    for (int j = 0; j < cipherLen; j++) {
-      encBuffer[j] = encBuffer[j + 16];
-    }
-    
-    // Stage-1 Decrypt: Use master key with CBC mode
-    AES_CBC_decrypt(&masterCtx, iv, encBuffer, cipherLen);
-    
-    // Remove PKCS#7 padding
-    // The last byte indicates how many padding bytes there are
-    if (cipherLen > 0) {
-      byte paddingLen = encBuffer[cipherLen - 1];
-      if (paddingLen > 0 && paddingLen <= 16 && paddingLen <= cipherLen) {
-        // Verify all padding bytes are correct
-        bool validPadding = true;
-        for (int j = cipherLen - paddingLen; j < cipherLen; j++) {
-          if (encBuffer[j] != paddingLen) {
-            validPadding = false;
-            break;
-          }
-        }
-        if (validPadding) {
-          cipherLen -= paddingLen;
-        }
-      }
-    }
-    
-    // Now we have plaintext - generate random nonce for ChaCha20
-    byte nonce[CHACHA20_NONCE_SIZE];
-    for (int j = 0; j < CHACHA20_NONCE_SIZE; j++) {
-      nonce[j] = random(256);
-    }
-    
-    // The actual plaintext length after unpadding
-    int plaintextLen = cipherLen;
-    
-    // Stage-2 Encrypt: ChaCha20 with device-specific key
-    ChaCha20_encrypt(encBuffer, plaintextLen, derivedKey, nonce, 0);
-    
-    // Prepare final buffer: flag + nonce + ciphertext
-    byte finalBuffer[MAX_PASSWORD_BLOCK_SIZE];
-    finalBuffer[0] = ENCRYPTION_STAGE_2;
-    memcpy(finalBuffer + 1, nonce, CHACHA20_NONCE_SIZE);
-    memcpy(finalBuffer + 1 + CHACHA20_NONCE_SIZE, encBuffer, plaintextLen);
-    
-    int finalLen = 1 + CHACHA20_NONCE_SIZE + plaintextLen;
-    
-    // Store in EEPROM
-    for (int j = 0; j < finalLen; j++) {
-      EEPROM.write(eepromOffset + j, finalBuffer[j]);
-    }
-    
-    // Load into RAM for runtime use
-    stage2PasswordLengths[i] = finalLen;
-    stage2PlaintextLengths[i] = plaintextLen;
-    memcpy(stage2Passwords[i], finalBuffer, finalLen);
-    
-    eepromOffset += finalLen;
-    
-    // Security: Clear buffers
-    memset(encBuffer, 0, sizeof(encBuffer));
-    memset(finalBuffer, 0, sizeof(finalBuffer));
-    memset(nonce, 0, sizeof(nonce));
-    memset(iv, 0, sizeof(iv));
-  }
-  
-  // Mark re-encryption as done
-  EEPROM.write(EEPROM_REENCRYPT_DONE_ADDR, 0xEE);
-  stage2Ready = true;
-  
-  // Clear sensitive data
-  memset(masterKey, 0, 16);
-  memset(&masterCtx, 0, sizeof(masterCtx));
-  
-  digitalWrite(LED_PIN, LOW);
-}
-
-/**
- * Load stage-2 encrypted passwords from EEPROM into RAM
- */
-void loadStage2Passwords() {
-  int eepromOffset = EEPROM_PASSWORDS_START;
-  
-  for (int i = 0; i < PASSWORD_ENTRY_COUNT; i++) {
-    PasswordEntry entry;
-    memcpy_P(&entry, &PASSWORD_ENTRIES[i], sizeof(PasswordEntry));
-    
-    // Calculate expected length: flag(1) + nonce(12) + ciphertext(plaintextLen)
-    int plaintextLen = entry.plaintext_len;
-    int finalLen = 1 + CHACHA20_NONCE_SIZE + plaintextLen;
-    
-    // Load from EEPROM
-    for (int j = 0; j < finalLen && j < MAX_PASSWORD_BLOCK_SIZE; j++) {
-      stage2Passwords[i][j] = EEPROM.read(eepromOffset + j);
-    }
-    
-    stage2PasswordLengths[i] = finalLen;
-    stage2PlaintextLengths[i] = plaintextLen;
-    eepromOffset += finalLen;
-  }
-  
-  stage2Ready = true;
 }
 
 void saveFailedAttempts() {
   EEPROM.write(EEPROM_FAILED_ATTEMPTS_ADDR, failedAttempts);
 }
 
-// Character mapping removed — Keyboard is initialized with German layout (KeyboardLayout_de_DE) so raw bytes are sent directly.
+bool decryptEntryFromProgmem(int entryIndex, byte* plaintextBuffer, int& plaintextLen, uint8_t& contentType) {
+  if (entryIndex < 0 || entryIndex >= PASSWORD_ENTRY_COUNT) {
+    return false;
+  }
+
+  PasswordEntry entry;
+  memcpy_P(&entry, &PASSWORD_ENTRIES[entryIndex], sizeof(PasswordEntry));
+
+  if (entry.password_len <= 17 || entry.password_len > MAX_ENCRYPTED_PASSWORD_LENGTH) {
+    return false;
+  }
+
+  byte encryptedBuffer[MAX_ENCRYPTED_PASSWORD_LENGTH];
+  for (int i = 0; i < entry.password_len; i++) {
+    encryptedBuffer[i] = pgm_read_byte(&entry.password[i]);
+  }
+
+  if (encryptedBuffer[0] != ENCRYPTION_STAGE_1) {
+    memset(encryptedBuffer, 0, sizeof(encryptedBuffer));
+    return false;
+  }
+
+  byte iv[16];
+  memcpy(iv, encryptedBuffer + 1, sizeof(iv));
+
+  plaintextLen = entry.password_len - 1 - sizeof(iv);
+  memcpy(plaintextBuffer, encryptedBuffer + 1 + sizeof(iv), plaintextLen);
+
+  byte masterKey[16];
+  for (int i = 0; i < 16; i++) {
+    masterKey[i] = pgm_read_byte(&AES_MASTER_KEY[i]);
+  }
+
+  AES_ctx masterCtx;
+  AES_init_ctx(&masterCtx, masterKey);
+  AES_CBC_decrypt(&masterCtx, iv, plaintextBuffer, plaintextLen);
+
+  if (plaintextLen <= 0) {
+    memset(encryptedBuffer, 0, sizeof(encryptedBuffer));
+    memset(masterKey, 0, sizeof(masterKey));
+    memset(&masterCtx, 0, sizeof(masterCtx));
+    memset(iv, 0, sizeof(iv));
+    return false;
+  }
+
+  byte paddingLen = plaintextBuffer[plaintextLen - 1];
+  if (paddingLen == 0 || paddingLen > 16 || paddingLen > plaintextLen) {
+    memset(encryptedBuffer, 0, sizeof(encryptedBuffer));
+    memset(masterKey, 0, sizeof(masterKey));
+    memset(&masterCtx, 0, sizeof(masterCtx));
+    memset(iv, 0, sizeof(iv));
+    memset(plaintextBuffer, 0, MAX_PLAINTEXT_LENGTH);
+    plaintextLen = 0;
+    return false;
+  }
+
+  for (int i = plaintextLen - paddingLen; i < plaintextLen; i++) {
+    if (plaintextBuffer[i] != paddingLen) {
+      memset(encryptedBuffer, 0, sizeof(encryptedBuffer));
+      memset(masterKey, 0, sizeof(masterKey));
+      memset(&masterCtx, 0, sizeof(masterCtx));
+      memset(iv, 0, sizeof(iv));
+      memset(plaintextBuffer, 0, MAX_PLAINTEXT_LENGTH);
+      plaintextLen = 0;
+      return false;
+    }
+  }
+
+  plaintextLen -= paddingLen;
+  contentType = entry.content_type;
+
+  memset(encryptedBuffer, 0, sizeof(encryptedBuffer));
+  memset(masterKey, 0, sizeof(masterKey));
+  memset(&masterCtx, 0, sizeof(masterCtx));
+  memset(iv, 0, sizeof(iv));
+  return true;
+}
+
+void writeSecretByte(byte value) {
+  if (value == '\r') {
+    return;
+  }
+  if (value == '\n') {
+    Keyboard.write(KEY_RETURN);
+    delay(8);
+    return;
+  }
+  Keyboard.write(value);
+}
 
 // ==================== LED Feedback ====================
 void blinkSuccess(int times = 4) {
@@ -376,53 +234,30 @@ void executePassword(int entryIndex) {
   if (entryIndex < 0 || entryIndex >= PASSWORD_ENTRY_COUNT) {
     return;
   }
-  
-  if (!stage2Ready) {
-    // Stage-2 not ready, cannot execute
-    blinkFail();
-    return;
-  }
 
-  // Use stage-2 encrypted password from RAM
-  byte decBuffer[MAX_PASSWORD_BLOCK_SIZE];
-  int encLen = stage2PasswordLengths[entryIndex];
-  int plaintextLen = stage2PlaintextLengths[entryIndex];
-  
-  memcpy(decBuffer, stage2Passwords[entryIndex], encLen);
-  
-  // Check stage-2 flag
-  if (decBuffer[0] != ENCRYPTION_STAGE_2) {
+  byte decBuffer[MAX_PLAINTEXT_LENGTH];
+  int plaintextLen = 0;
+  uint8_t contentType = CONTENT_TYPE_TEXT;
+  if (!decryptEntryFromProgmem(entryIndex, decBuffer, plaintextLen, contentType)) {
     blinkFail();
     memset(decBuffer, 0, sizeof(decBuffer));
     return;
   }
-  
-  // Extract nonce (bytes 1-12)
-  byte nonce[CHACHA20_NONCE_SIZE];
-  memcpy(nonce, decBuffer + 1, CHACHA20_NONCE_SIZE);
-  
-  // Extract ciphertext (after flag and nonce)
-  int cipherStart = 1 + CHACHA20_NONCE_SIZE;
-  for (int i = 0; i < plaintextLen; i++) {
-    decBuffer[i] = decBuffer[cipherStart + i];
-  }
-  
-  // Decrypt with ChaCha20
-  ChaCha20_decrypt(decBuffer, plaintextLen, derivedKey, nonce, 0);
-  
-  // Type password using German keyboard layout
+
   Keyboard.begin(KeyboardLayout_de_DE);
   for (int i = 0; i < plaintextLen; i++) {
-    Keyboard.write(decBuffer[i]);
+    writeSecretByte(decBuffer[i]);
+    if (contentType == CONTENT_TYPE_GPG_PRIVATE_KEY && (i % 64) == 63) {
+      delay(2);
+    }
   }
   Keyboard.end();
-  
+
   // Security: Multi-pass clear
   memset(decBuffer, 0xFF, sizeof(decBuffer));
   memset(decBuffer, 0xAA, sizeof(decBuffer));
   memset(decBuffer, 0x00, sizeof(decBuffer));
-  memset(nonce, 0, sizeof(nonce));
-  
+
   blinkSuccess();
   
   // Reset brute-force counter on success
@@ -462,24 +297,7 @@ void setup() {
   delay(500);
   digitalWrite(LED_PIN, LOW);
   
-  Keyboard.begin(KeyboardLayout_de_DE);
-  
-  // Initialize device ID if first boot
-  initializeDeviceID();
-  
-  // Derive device-specific encryption key
-  deriveEncryptionKey();
-  
-  // Check if stage-2 re-encryption was already performed
-  byte reencryptDone = EEPROM.read(EEPROM_REENCRYPT_DONE_ADDR);
-  
-  if (reencryptDone != 0xEE) {
-    // First boot or EEPROM was cleared: perform stage-2 re-encryption
-    performStage2ReEncryption();
-  } else {
-    // Load existing stage-2 passwords from EEPROM
-    loadStage2Passwords();
-  }
+  initializeStateStorage();
   
   // Load failed attempts from EEPROM
   failedAttempts = EEPROM.read(EEPROM_FAILED_ATTEMPTS_ADDR);
