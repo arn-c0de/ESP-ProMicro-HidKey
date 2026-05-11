@@ -42,6 +42,43 @@ bool isLockedOut = false;
 // Buffer for current input sequence
 byte currentInput[MAX_SEQUENCE_LENGTH];
 
+// Whether the current typing session uses the German layout (and therefore
+// needs the Latin-1 high-byte translation below). The Arduino Keyboard
+// library's layout tables only cover ASCII (0x00-0x7F); bytes >= 0x80 are
+// otherwise interpreted as raw HID usage codes and produce garbage.
+static bool useDeLayout = false;
+
+// Press a raw HID usage code with optional Shift / AltGr modifiers and
+// release everything. Bypasses the _asciimap layout lookup by adding 136
+// (see Keyboard.cpp: values >= 136 are treated as non-printing keys).
+static void sendRawHidKey(uint8_t hid, bool shift, bool altGr) {
+  if (shift)  Keyboard.press(0x81);          // KEY_LEFT_SHIFT
+  if (altGr)  Keyboard.press(0x86);          // KEY_RIGHT_ALT (AltGr)
+  Keyboard.press((uint8_t)(hid + 136));
+  Keyboard.releaseAll();
+  delay(4);
+}
+
+// Translate a Latin-1 byte > 0x7F into the corresponding DE keyboard key
+// combination. Returns true if handled (typed or intentionally dropped).
+static bool writeDeLatin1Extra(byte value) {
+  switch (value) {
+    case 0xE4: sendRawHidKey(0x34, false, false); return true; // ae
+    case 0xC4: sendRawHidKey(0x34, true,  false); return true; // AE
+    case 0xF6: sendRawHidKey(0x33, false, false); return true; // oe
+    case 0xD6: sendRawHidKey(0x33, true,  false); return true; // OE
+    case 0xFC: sendRawHidKey(0x2F, false, false); return true; // ue
+    case 0xDC: sendRawHidKey(0x2F, true,  false); return true; // UE
+    case 0xDF: sendRawHidKey(0x2D, false, false); return true; // sz
+    case 0xA7: sendRawHidKey(0x20, true,  false); return true; // section sign  (Shift+3)
+    case 0xB0: sendRawHidKey(0x35, true,  false); return true; // degree sign   (Shift+^)
+    case 0xB2: sendRawHidKey(0x1F, false, true ); return true; // superscript 2 (AltGr+2)
+    case 0xB3: sendRawHidKey(0x20, false, true ); return true; // superscript 3 (AltGr+3)
+    case 0xB5: sendRawHidKey(0x10, false, true ); return true; // micro sign    (AltGr+M)
+    default:   return false;
+  }
+}
+
 void initializeStateStorage() {
   if (EEPROM.read(EEPROM_MAGIC_ADDR) != EEPROM_MAGIC_VALUE) {
     EEPROM.write(EEPROM_FAILED_ATTEMPTS_ADDR, 0);
@@ -138,6 +175,12 @@ void writeSecretByte(byte value) {
   if (value == '\n') {
     Keyboard.write(KEY_RETURN);
     delay(8);
+    return;
+  }
+  if (value >= 0x80) {
+    if (useDeLayout) {
+      writeDeLatin1Extra(value);
+    }
     return;
   }
   Keyboard.write(value);
@@ -244,7 +287,13 @@ void executePassword(int entryIndex) {
     return;
   }
 
-  Keyboard.begin(KeyboardLayout_de_DE);
+  if (contentType == CONTENT_TYPE_GPG_PRIVATE_KEY) {
+    Keyboard.begin(KeyboardLayout_en_US);
+    useDeLayout = false;
+  } else {
+    Keyboard.begin(KeyboardLayout_de_DE);
+    useDeLayout = true;
+  }
   for (int i = 0; i < plaintextLen; i++) {
     writeSecretByte(decBuffer[i]);
     if (contentType == CONTENT_TYPE_GPG_PRIVATE_KEY && (i % 64) == 63) {
@@ -297,8 +346,10 @@ void setup() {
   delay(500);
   digitalWrite(LED_PIN, LOW);
   
+  Keyboard.begin(KeyboardLayout_de_DE);
+
   initializeStateStorage();
-  
+
   // Load failed attempts from EEPROM
   failedAttempts = EEPROM.read(EEPROM_FAILED_ATTEMPTS_ADDR);
   if (failedAttempts > MAX_FAILED_ATTEMPTS) {

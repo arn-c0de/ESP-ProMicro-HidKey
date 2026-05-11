@@ -12,14 +12,16 @@ SKETCH_DIR="$(dirname "$(realpath "$0")")"
 BOARD="arduino:avr:leonardo"
 
 # Default values
-PORT="/dev/ttyACM0"
+PORT=""
 RESET_EEPROM=0
+PORT_EXPLICITLY_SET=0
 
 # Parse arguments: -p|--port PORT and -r|--reset-eeprom
 while [ $# -gt 0 ]; do
   case "$1" in
     -p|--port)
       PORT="$2"
+      PORT_EXPLICITLY_SET=1
       shift 2
       ;;
     -r|--reset-eeprom|-R)
@@ -29,10 +31,63 @@ while [ $# -gt 0 ]; do
     *)
       # If a single positional arg is passed assume it's the port
       PORT="$1"
+      PORT_EXPLICITLY_SET=1
       shift
       ;;
   esac
 done
+
+detect_serial_ports() {
+    local ports=()
+    local path
+    for path in /dev/ttyACM* /dev/ttyUSB*; do
+        if [ -e "$path" ]; then
+            ports+=("$path")
+        fi
+    done
+    printf '%s\n' "${ports[@]}"
+}
+
+choose_port() {
+    local ports=()
+    local port_lines
+    local selection
+
+    mapfile -t ports < <(detect_serial_ports)
+
+    if [ ${#ports[@]} -eq 0 ]; then
+        echo "⚠️  No serial ports detected right now."
+        echo "   Connect the board or enter bootloader mode, then rerun with:"
+        echo "   ./build.sh --port /dev/ttyACM0"
+        exit 1
+    fi
+
+    if [ ${#ports[@]} -eq 1 ]; then
+        PORT="${ports[0]}"
+        echo "🔌 Auto-selected serial port: $PORT"
+        return
+    fi
+
+    echo "Available serial ports:"
+    for i in "${!ports[@]}"; do
+        printf "  %d) %s\n" "$((i + 1))" "${ports[$i]}"
+    done
+    echo ""
+
+    while true; do
+        read -r -p "Select upload port [1-${#ports[@]}]: " selection
+        if [[ "$selection" =~ ^[0-9]+$ ]] && [ "$selection" -ge 1 ] && [ "$selection" -le "${#ports[@]}" ]; then
+            PORT="${ports[$((selection - 1))]}"
+            echo "🔌 Selected serial port: $PORT"
+            return
+        fi
+        echo "Invalid selection."
+    done
+}
+
+if [ "$PORT_EXPLICITLY_SET" -eq 0 ]; then
+    choose_port
+fi
 
 echo "═══════════════════════════════════════════════════════════"
 echo "  ESP-ProMicro-HidKey v2.0 - Build Script"

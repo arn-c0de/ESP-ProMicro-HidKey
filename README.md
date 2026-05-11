@@ -141,6 +141,10 @@ COMBINATION_2_TYPE="gpg-private-key"
 COMBINATION_2_GPG_PRIVATE_KEY_FILE="./secrets/private-message-key.asc"
 ```
 
+**Quoting Notes:**
+- If a secret contains a literal `"` character, wrap the whole value in single quotes.
+- For very complex secrets, prefer `COMBINATION_n_SECRET_FILE=./secrets/my-secret.txt`
+
 **Sequence Format:**
 - `0` = Short button press (< 500ms)
 - `1` = Long button press (≥ 500ms)
@@ -167,7 +171,7 @@ The build script automatically:
 - Compiles the sketch
 - Uploads to the device
 
-**Default Port:** `/dev/ttyACM0`
+If you do not pass a port explicitly, `build.sh` lists the detected serial ports and lets you choose one interactively.
 
 **Custom Port Example:**
 ```bash
@@ -179,7 +183,7 @@ The `--reset-eeprom` flag (short `-r`) clears the device's EEPROM state, includi
 
 Examples:
 ```bash
-# Reset EEPROM and upload (default port /dev/ttyACM0)
+# Reset EEPROM and upload after interactive port selection
 ./build.sh -r
 
 # Reset EEPROM and upload to specific port
@@ -320,7 +324,7 @@ This device relies on:
 ### Port Not Found
 
 **Solutions by Platform:**
-- **Linux**: Usually `/dev/ttyACM0` or `/dev/ttyACM1`
+- **Linux**: Usually `/dev/ttyACM0`, `/dev/ttyACM1`, or `/dev/ttyUSB0`
 - **macOS**: Use tab completion with `/dev/cu.usbmodem*`
 - **Windows**: Check Device Manager; typically `COM3` or `COM4`
 

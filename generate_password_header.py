@@ -9,6 +9,25 @@ MAX_SEQUENCE_LENGTH = 20
 CONTENT_TYPE_TEXT = 0x00
 CONTENT_TYPE_GPG_PRIVATE_KEY = 0x01
 
+def parse_env_value(raw_value):
+    value = raw_value.strip()
+    if len(value) < 2:
+        return value
+
+    quote = value[0]
+    if quote not in ('"', "'") or value[-1] != quote:
+        return value
+
+    inner = value[1:-1]
+    if quote == '"':
+        return (
+            inner
+            .replace('\\"', '"')
+            .replace("\\'", "'")
+            .replace('\\\\', '\\')
+        )
+    return inner.replace("\\'", "'").replace('\\\\', '\\')
+
 def load_env(env_path):
     env_vars = {}
     if not env_path.exists():
@@ -19,7 +38,7 @@ def load_env(env_path):
             line = line.strip()
             if line and not line.startswith('#') and '=' in line:
                 key, value = line.split('=', 1)
-                env_vars[key.strip()] = value.strip().strip('"').strip("'")
+                env_vars[key.strip()] = parse_env_value(value)
     return env_vars
 
 def decode_escaped_value(value):
@@ -137,7 +156,8 @@ def generate_header(combinations, aes_key, output_path):
         seq_arr = ", ".join(str(s) for s in comb['sequence'])
         sequence_defs.append(f"const byte PROGMEM seq_{idx}[] = {{{seq_arr}}};")
 
-        secret_bytes = comb['secret'].encode('utf-8')
+        encoding = 'utf-8' if comb['content_type'] == CONTENT_TYPE_GPG_PRIVATE_KEY else 'latin-1'
+        secret_bytes = comb['secret'].encode(encoding)
         encrypted = aes_encrypt_cbc(secret_bytes, aes_key)
         # Add stage-1 encryption flag (0x01) at the beginning
         pwd_with_flag = [0x01] + encrypted
