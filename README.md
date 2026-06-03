@@ -77,10 +77,12 @@ GND              LED cathode (-)
 sudo apt install python3-pycryptodomex
 ```
 
-Or via pip:
+Or via pip (pinned):
 ```bash
-pip3 install pycryptodomex --user
+pip3 install --user -r requirements.txt
 ```
+Note: the import namespace is `Cryptodome`, provided by **`pycryptodomex`** — do
+not `pip install Cryptodome` (that bare name is not the canonical package).
 
 **2. Install arduino-cli:**
 

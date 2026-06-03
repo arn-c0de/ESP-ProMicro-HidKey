@@ -11,6 +11,11 @@ ARDUINO_CLI="${ARDUINO_CLI:-arduino-cli}"
 SKETCH_DIR="$(dirname "$(realpath "$0")")"
 BOARD="arduino:avr:leonardo"
 
+# Pinned core versions for reproducible builds (override via env if your setup
+# needs different ones). Pinning avoids silently pulling a new/compromised core.
+ARDUINO_AVR_VERSION="${ARDUINO_AVR_VERSION:-1.8.6}"
+SPARKFUN_AVR_VERSION="${SPARKFUN_AVR_VERSION:-1.1.13}"
+
 # Default values
 PORT=""
 RESET_EEPROM=0
@@ -139,15 +144,15 @@ else
 fi
 echo ""
 
-# Install board cores if necessary
+# Install board cores if necessary (pinned versions)
 if ! $ARDUINO_CLI core list | grep -q "arduino:avr"; then
-    echo "Installing Arduino AVR Core..."
-    $ARDUINO_CLI core install arduino:avr
+    echo "Installing Arduino AVR Core ${ARDUINO_AVR_VERSION}..."
+    $ARDUINO_CLI core install "arduino:avr@${ARDUINO_AVR_VERSION}"
 fi
 
 if ! $ARDUINO_CLI core list | grep -q "SparkFun:avr"; then
-    echo "Installing SparkFun AVR Core..."
-    $ARDUINO_CLI core install SparkFun:avr --additional-urls https://raw.githubusercontent.com/sparkfun/Arduino_Boards/main/IDE_Board_Manager/package_sparkfun_index.json
+    echo "Installing SparkFun AVR Core ${SPARKFUN_AVR_VERSION}..."
+    $ARDUINO_CLI core install "SparkFun:avr@${SPARKFUN_AVR_VERSION}" --additional-urls https://raw.githubusercontent.com/sparkfun/Arduino_Boards/main/IDE_Board_Manager/package_sparkfun_index.json
 fi
 
 # Generate build_config.h from .env (SEQUENCE_TIMEOUT_MS)
