@@ -108,6 +108,8 @@ print(secrets.token_hex(16).upper())
 PY
 )
 
+    # Create the .env (which holds the AES key) with restrictive perms from the start
+    umask 077
     cat > "$SKETCH_DIR/.env" <<EOF
 # Auto-generated .env for ESP-ProMicro-HidKey
 AES_MASTER_KEY=${AES_KEY}
@@ -121,20 +123,21 @@ COMBINATION_0_PASSWORD=your_password_here
 SEQUENCE_TIMEOUT_MS=3000  # milliseconds of inactivity before sequence recognition
 EOF
 
-    echo "✅ Created $SKETCH_DIR/.env — edit COMBINATION_* or SEQUENCE_TIMEOUT_MS values before building"
-else
-    # Step 1: Generate encrypted password header
-    echo "📝 Generating encrypted secret header..."
-    cd "$SKETCH_DIR"
-    python3 generate_password_header.py
-    if [ $? -eq 0 ]; then
-        echo "✅ Generated: embedded_passwords.h (AES-CBC)"
-    else
-        echo "❌ Failed to generate password header"
-        exit 1
-    fi
-    echo ""
+    chmod 600 "$SKETCH_DIR/.env"
+    echo "✅ Created $SKETCH_DIR/.env — edit COMBINATION_* or SEQUENCE_TIMEOUT_MS values, then re-run ./build.sh"
+    exit 0
 fi
+
+# Step 1: Generate encrypted password header
+echo "📝 Generating encrypted secret header..."
+cd "$SKETCH_DIR"
+if python3 generate_password_header.py; then
+    echo "✅ Generated: embedded_passwords.h (AES-CBC)"
+else
+    echo "❌ Failed to generate password header"
+    exit 1
+fi
+echo ""
 
 # Install board cores if necessary
 if ! $ARDUINO_CLI core list | grep -q "arduino:avr"; then
@@ -149,7 +152,11 @@ fi
 
 # Generate build_config.h from .env (SEQUENCE_TIMEOUT_MS)
 SEQ_TIMEOUT_MS=$(grep -E '^SEQUENCE_TIMEOUT_MS=' "$SKETCH_DIR/.env" | cut -d= -f2 | sed -E 's/[[:space:]]*#.*//' | tr -d '[:space:]' || true)
-if [ -z "$SEQ_TIMEOUT_MS" ]; then
+# Must be a bare integer: it is interpolated directly into a C macro.
+if ! [[ "$SEQ_TIMEOUT_MS" =~ ^[0-9]+$ ]]; then
+    if [ -n "$SEQ_TIMEOUT_MS" ]; then
+        echo "⚠️  SEQUENCE_TIMEOUT_MS='$SEQ_TIMEOUT_MS' is not an integer; falling back to 3000"
+    fi
     SEQ_TIMEOUT_MS=3000
 fi
 cat > "$SKETCH_DIR/build_config.h" <<EOF
@@ -163,13 +170,11 @@ echo "🛠  Generated build_config.h (SEQUENCE_TIMEOUT_MS=${SEQ_TIMEOUT_MS})"
 # Optional: Reset EEPROM (force Stage-2 re-encryption) by uploading reset_eeprom.ino
 if [ "$RESET_EEPROM" -eq 1 ]; then
     echo "🔁 Resetting EEPROM state: compiling and uploading reset_eeprom.ino..."
-    $ARDUINO_CLI compile -v --fqbn "$BOARD" "$SKETCH_DIR/tools/reset_eeprom/reset_eeprom.ino"
-    if [ $? -ne 0 ]; then
+    if ! $ARDUINO_CLI compile -v --fqbn "$BOARD" "$SKETCH_DIR/tools/reset_eeprom/reset_eeprom.ino"; then
         echo "❌ Failed to compile reset_eeprom.ino"
         exit 1
     fi
-    $ARDUINO_CLI upload -v -p "$PORT" --fqbn "$BOARD" "$SKETCH_DIR/tools/reset_eeprom/reset_eeprom.ino"
-    if [ $? -ne 0 ]; then
+    if ! $ARDUINO_CLI upload -v -p "$PORT" --fqbn "$BOARD" "$SKETCH_DIR/tools/reset_eeprom/reset_eeprom.ino"; then
         echo "❌ Failed to upload reset_eeprom.ino"
         exit 1
     fi
@@ -188,9 +193,8 @@ else
     exit 1
 fi
 
-$ARDUINO_CLI compile -v --fqbn "$BOARD" "$MAIN_SKETCH"
-
-if [ $? -ne 0 ]; then
+# set -e would abort on a failed compile, so test explicitly to print a message.
+if ! $ARDUINO_CLI compile -v --fqbn "$BOARD" "$MAIN_SKETCH"; then
     echo "❌ Kompilierung fehlgeschlagen!"
     exit 1
 fi
@@ -202,9 +206,7 @@ echo ""
 # Flash
 echo "Flashing to $PORT..."
 echo "(If necessary: press the Reset button on the Pro Micro)"
-$ARDUINO_CLI upload -v -p "$PORT" --fqbn "$BOARD" "$MAIN_SKETCH"
-
-if [ $? -eq 0 ]; then
+if $ARDUINO_CLI upload -v -p "$PORT" --fqbn "$BOARD" "$MAIN_SKETCH"; then
     echo ""
     echo "═══════════════════════════════════════════════════════════"
     echo "✅ SUCCESS! Device programmed"
@@ -218,7 +220,7 @@ if [ $? -eq 0 ]; then
     echo "🎮 Usage:"
     echo "   - Enter button sequence (short/long presses)"
     echo "   - Device will type the configured secret on match"
-    echo "   - 3 seconds timeout between presses"
+    echo "   - ${SEQ_TIMEOUT_MS} ms timeout between presses (SEQUENCE_TIMEOUT_MS)"
     echo ""
     echo "🔒 Active protection:"
     echo "   ✅ AES-CBC with IV (instead of ECB)"
