@@ -156,7 +156,7 @@ def generate_header(combinations, aes_key, output_path):
     max_plaintext_len = 0
     max_encrypted_len = 0
     
-    for comb in combinations:
+    for position, comb in enumerate(combinations):
         idx = comb['index']
         seq_arr = ", ".join(str(s) for s in comb['sequence'])
         sequence_defs.append(f"const byte PROGMEM seq_{idx}[] = {{{seq_arr}}};")
@@ -166,10 +166,13 @@ def generate_header(combinations, aes_key, output_path):
         encoding = 'utf-8' if comb['content_type'] == CONTENT_TYPE_GPG_PRIVATE_KEY else 'latin-1'
         try:
             secret_bytes = comb['secret'].encode(encoding)
-        except UnicodeEncodeError as exc:
+        except UnicodeEncodeError:
+            # Use `position` (from enumerate), not anything read from `comb`: the
+            # comb dict holds the secret, and including any of its fields — or the
+            # exception, which carries the secret — would taint the log message.
             print(
-                f"Error: COMBINATION_{idx} contains a character outside Latin-1 "
-                f"(position {exc.start}); only GPG keys support the full UTF-8 range.",
+                f"Error: COMBINATION_{position} contains a character outside Latin-1; "
+                f"only GPG keys support the full UTF-8 range.",
                 file=sys.stderr,
             )
             sys.exit(1)
