@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import os
+import re
 import sys
 from pathlib import Path
 from Cryptodome.Cipher import AES
@@ -42,11 +44,14 @@ def load_env(env_path):
     return env_vars
 
 def decode_escaped_value(value):
+    # Decode escape sequences to their literal characters. Line endings are
+    # normalized later in normalize_secret(); here \r must decode to a real
+    # carriage return, not a newline (mapping \r -> \n silently corrupts data).
     return (
         value
-        .replace('\\r\\n', '\n')
+        .replace('\\r\\n', '\r\n')
         .replace('\\n', '\n')
-        .replace('\\r', '\n')
+        .replace('\\r', '\r')
         .replace('\\t', '\t')
         .replace('\\\\', '\\')
     )
@@ -156,8 +161,18 @@ def generate_header(combinations, aes_key, output_path):
         seq_arr = ", ".join(str(s) for s in comb['sequence'])
         sequence_defs.append(f"const byte PROGMEM seq_{idx}[] = {{{seq_arr}}};")
 
+        # GPG keys are UTF-8; text secrets use Latin-1 so each character maps to a
+        # single byte the firmware types verbatim (matches its DE high-byte table).
         encoding = 'utf-8' if comb['content_type'] == CONTENT_TYPE_GPG_PRIVATE_KEY else 'latin-1'
-        secret_bytes = comb['secret'].encode(encoding)
+        try:
+            secret_bytes = comb['secret'].encode(encoding)
+        except UnicodeEncodeError as exc:
+            print(
+                f"Error: COMBINATION_{idx} contains a character outside Latin-1 "
+                f"(position {exc.start}); only GPG keys support the full UTF-8 range.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         encrypted = aes_encrypt_cbc(secret_bytes, aes_key)
         # Add stage-1 encryption flag (0x01) at the beginning
         pwd_with_flag = [0x01] + encrypted
@@ -220,9 +235,13 @@ const PasswordEntry PASSWORD_ENTRIES[] PROGMEM = {{
 #endif
 """
     
-    with open(output_path, 'w') as f:
+    # The header embeds the AES master key, so create it with 0600 from the start
+    # (create-with-mode avoids the race window of a chmod-after-write).
+    fd = os.open(output_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w') as f:
         # Passwords are AES-CBC encrypted before storage - not clear text
         f.write(header)  # lgtm[py/clear-text-storage-sensitive-data]
+    os.chmod(output_path, 0o600)  # tighten perms even if the file pre-existed
     print(f"Header created: {output_path} ({len(combinations)} combinations)")
 
 def main():
@@ -230,8 +249,8 @@ def main():
     env_vars = load_env(script_dir / '.env')
     
     aes_key = env_vars.get('AES_MASTER_KEY', '').replace(' ', '').replace('-', '').upper()
-    if len(aes_key) != 32:
-        print(f"Error: AES_MASTER_KEY must be 32 hex chars", file=sys.stderr)
+    if not re.fullmatch(r'[0-9A-F]{32}', aes_key):
+        print("Error: AES_MASTER_KEY must be 32 hexadecimal characters (AES-128)", file=sys.stderr)
         sys.exit(1)
     
     combinations = parse_combinations(env_vars)
