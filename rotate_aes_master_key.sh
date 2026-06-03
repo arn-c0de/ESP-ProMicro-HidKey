@@ -52,10 +52,9 @@ try:
         f.write(updated)
         f.flush()
         os.fsync(f.fileno())
-    os.replace(tmp, env_path)          # atomic within the same filesystem
-    os.chmod(env_path, 0o600)          # tighten perms if the file pre-existed
+    os.replace(tmp, env_path)          # atomic; the 0600 temp inode becomes .env
 except BaseException:
-    os.unlink(tmp)
+    os.unlink(tmp)                     # only reached before replace; tmp still exists
     raise
 PY
 
