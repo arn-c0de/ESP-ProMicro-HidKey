@@ -55,7 +55,16 @@ jobs:
           arduino-cli core install arduino:avr@1.8.6
           arduino-cli lib install Keyboard
           pip install -r requirements.txt
-          cp .env.example .env
+          # Minimal self-contained .env (no external GPG file) so the build is
+          # reproducible in CI and only exercises text-secret encryption.
+          cat > .env <<'ENV'
+          AES_MASTER_KEY=0123456789ABCDEF0123456789ABCDEF
+          COMBINATION_COUNT=1
+          COMBINATION_0_SEQUENCE=0,1,0
+          COMBINATION_0_TYPE=text
+          COMBINATION_0_PASSWORD=ci_dummy_secret
+          SEQUENCE_TIMEOUT_MS=2000
+          ENV
           python generate_password_header.py
           arduino-cli compile --fqbn arduino:avr:leonardo ESP-ProMicro-HidKey.ino
 

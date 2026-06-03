@@ -358,17 +358,20 @@ nano .env
 ESP-ProMicro-HidKey/
 ├── ESP-ProMicro-HidKey.ino      # Main Arduino sketch
 ├── aes.h                         # AES-128-CBC implementation
-├── chacha20.h                    # Legacy file from earlier storage design
-├── sha256.h                      # Legacy file from earlier storage design
-├── embedded_passwords.h          # Auto-generated encrypted secrets
+├── embedded_passwords.h          # Auto-generated encrypted secrets (gitignored)
 ├── generate_password_header.py   # Secret encryption generator
+├── decode_flash.py               # Owner-only flash-dump decryptor (forensics)
+├── rotate_aes_master_key.sh      # Rotate the AES master key in .env
 ├── build.sh                      # Build and flash automation script
 ├── build_config.h                # Compile-time configuration
+├── requirements.txt              # Pinned Python build dependency
+├── tools/reset_eeprom/           # EEPROM reset + flash dump helpers
 ├── .env                          # Your secret configuration (gitignored)
 ├── .env.example                  # Example configuration template
 ├── .gitignore                    # Git ignore rules
 ├── README.md                     # This file
-├── SECURITY_UPGRADE.md           # Security implementation details
+├── CODE_REVIEW_2026.md           # Review findings + best-practice notes
+├── VULNERABILITY_ANALYSIS.md     # Threat model and ranked findings
 └── LICENSE                       # Project license
 ```
 
@@ -543,4 +546,4 @@ This project is provided **as-is** for educational and personal use. The authors
 For more information about cryptographic implementations and security practices:
 - [NIST SP 800-38A: Block Cipher Modes](https://nvlpubs.nist.gov/nistpubs/Legacy/SP/nistspecialpublication800-38a.pdf) (AES-CBC)
 
-See [SECURITY_UPGRADE.md](SECURITY_UPGRADE.md) for detailed encryption architecture documentation.
+See [VULNERABILITY_ANALYSIS.md](VULNERABILITY_ANALYSIS.md) for the threat model and ranked findings, and [CODE_REVIEW_2026.md](CODE_REVIEW_2026.md) for the review notes.
