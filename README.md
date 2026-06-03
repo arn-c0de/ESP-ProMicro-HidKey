@@ -14,8 +14,8 @@ This project implements a sequence-based secret launcher on microcontroller hard
   - **Build-Time Encryption**: AES-128-CBC with per-secret random IV
   - **Runtime Decryption**: Entries are decrypted directly from flash immediately before USB typing
 - **Multiline Secret Support**: Supports escaped newlines and file-based import for ASCII-armored GPG private keys
-- **Persistent Brute-Force Protection**: Survives power cycles and device resets
-- **Memory Security**: Multi-pass buffer clearing and automatic crypto context zeroing
+- **Brute-Force Counter**: Persisted in EEPROM (weak — small PIN space, see Security Architecture)
+- **Memory Security**: Barrier-protected buffer wiping and automatic crypto context zeroing
 - **LED Feedback**: Real-time status indicators for user actions
 - **Configuration Management**: Simple `.env` file configuration (auto-generated if missing)
 - **No Plaintext Storage**: Secrets never appear in generated headers as plaintext
@@ -214,88 +214,92 @@ After flashing:
 | 4 quick blinks | Password matched and transmitted successfully |
 | Solid 2-second glow | Invalid sequence or no match found |
 | 10 rapid blinks | Brute-force lockout activated |
-| 2 quick blinks (startup) | Device ready (stage-2 encryption initialized) |
+| 2 quick blinks (startup) | Device ready |
 
 ## Security Architecture
 
-This project implements a **two-stage encryption system** to minimize attack surface while providing device-unique protection for each deployed instance.
+> **⚠️ Read this before trusting the device with anything valuable.**
+> The encryption here is **obfuscation / defense-in-depth, not a security
+> boundary**. The AES master key is stored in plaintext flash right next to the
+> ciphertext it protects, so **anyone who can read the firmware image recovers
+> every secret** — including any GPG private key. This has been demonstrated:
+> a flash dump decrypts itself with no `.env` and no EEPROM. Treat a device that
+> has left your physical control as fully compromised.
 
-### Two-Stage Encryption
+### How it works (single-stage)
 
-#### Stage 1: Build-Time Encryption (Python)
+#### Build-time encryption (Python)
 
-Executed during the build process to protect secrets before firmware deployment:
+- Secrets are encrypted with **AES-128-CBC** (PKCS#7 padding) using the master
+  key from `.env`.
+- A CSPRNG 16-byte IV is generated per secret and prepended to the ciphertext.
+- Encrypted data is marked with flag `0x01` and embedded in `embedded_passwords.h`.
+- **The master key is embedded in PROGMEM (flash) in the same image.**
 
-- Secrets encrypted with **AES-128-CBC** (PKCS#7 padding) using the master key from `.env`
-- A cryptographically random 16-byte IV generated per password and prepended to ciphertext
-- Encrypted data marked with flag `0x01` and embedded in firmware (`embedded_passwords.h`)
-- Master key stored in PROGMEM (flash memory)
+#### Runtime handling
 
-#### Runtime Secret Handling
+- On a recognized button sequence, the matching entry is read from PROGMEM and
+  decrypted in RAM using the embedded master key.
+- The plaintext is typed over USB keyboard emulation into whatever window has
+  focus, then the RAM buffer is wiped.
 
-Executed when a valid button sequence is entered:
+### What the encryption does and does not buy you
 
-- The matching entry is read from PROGMEM
-- The IV and ciphertext are decrypted in RAM using the AES master key
-- The resulting bytes are typed over USB keyboard emulation
-- Multiline secrets use real line breaks, which allows clean output of ASCII-armored GPG private keys
-
-### Security Benefits
-
-| Aspect | Benefit |
+| Property | Reality |
 |---|---|
-| **Cryptographic Strength** | CBC prevents block-pattern leakage and each secret gets its own IV |
-| **Operational Simplicity** | No second encrypted copy in EEPROM is required for large multiline payloads |
-| **Persistent Storage** | Plaintext only briefly exists in RAM during processing and is immediately cleared |
+| Resists casual `strings`/inspection of the image | ✅ Yes |
+| Each secret has a unique IV (no block-pattern leakage) | ✅ Yes |
+| Resists an attacker who can **dump flash** | ❌ **No** — key is in the dump |
+| Authenticates ciphertext (tamper detection) | ❌ No (CBC, no MAC) |
+| Key derived from a user secret | ❌ No — key is stored, not derived |
 
-### Memory Security Practices
+### Memory handling
 
-- Secrets stored encrypted in flash
-- Plaintext only decrypted into RAM during keyboard transmission
-- RAM buffers cleared via 3-pass overwrite (0xFF → 0xAA → 0x00)
-- AES contexts zeroed after use
-- Plaintext secrets never in generated headers
+- Plaintext exists in RAM only during typing and is then overwritten with a
+  `secureWipe()` helper that uses a compiler memory barrier so the wipe is not
+  optimized away (single pass — SRAM has no remanence).
+- AES context, key copy, and IV buffers are wiped on every exit path.
+- Plaintext secrets are never written to the generated header.
 
-### Persistent Brute-Force Protection
+### Brute-force protection (weak — do not rely on it)
 
-- Failed attempt counter stored in EEPROM
-- **Survives power cycles and device resets**
-- Threshold: Maximum 5 failed attempts
-- Lockout duration: 30 seconds
-- Counter only resets on successful password entry
-- No bypass via simple reset
+- A failed-attempt counter is stored in one EEPROM byte (threshold 5, 30 s
+  lockout) and a corrupted counter now fails closed (enters lockout).
+- **Limitations you must understand:** each press encodes only 1 bit, so a
+  3–5 press sequence is only **8–32 possibilities**. The lockout timer is not
+  persisted across reboots, and an attacker can power-cycle or cut power before
+  the recognition timeout to avoid the increment. The counter rate-limits but
+  **cannot make a short button PIN cryptographically strong.**
 
-### Threat Model and Limitations
+### Threat model
 
-#### Protected Against
-- ✅ Firmware extraction alone (stage-2 requires EEPROM)
-- ✅ USB replay attacks via keyboard sniffing
-- ✅ Timing attacks on sequence matching
-- ✅ Brute-force bypass via device reset
-- ✅ RAM recovery from powered-off device
+#### Reasonably resists
+- ✅ Casual inspection of the firmware image (`strings`)
+- ✅ USB keyboard *replay* of a previously sniffed sequence (it's a press pattern,
+  not a transmitted secret)
+- ✅ Recovery of plaintext from RAM after power-off (decrypt-on-demand, wiped after)
 
-#### Not Protected Against
-- ❌ Combined flash + EEPROM physical extraction
-- ❌ Sophisticated hardware attacks (power analysis, fault injection)
+#### Does NOT resist
+- ❌ **Flash extraction alone** — recovers the key and all secrets (the device
+  ships `tools/reset_eeprom/dump_flash.sh` + `decode_flash.py`, which do exactly
+  this)
+- ❌ Brute-force of the short button PIN (small keyspace, bypassable lockout)
+- ❌ A device plugged into an attacker's host (it will type secrets on a correct
+  sequence, with no host authentication or confirmation prompt)
+- ❌ Hardware attacks (power/EM analysis, fault injection, glitching) — the
+  ATmega32U4 has no countermeasures
 - ❌ Physical coercion
 
-#### Design Principles
-
-This device relies on:
-1. **Physical Security**: Secure storage/location
-2. **Knowledge Factor**: Memorized button sequences
-3. **Possession Factor**: Device ownership
-
-**⚠️ Warning:** The ATmega32U4 lacks hardware security features:
-- No secure boot mechanism
-- No flash/EEPROM read protection
-- No trusted execution environment
-- Side-channel attacks (power analysis, timing) possible with specialized equipment
+**⚠️ The ATmega32U4 has no secure element, no flash/EEPROM read protection, no
+secure boot.** No software change can fully close the gaps above on this MCU.
 
 **Recommendations:**
-- Use only in physically secure environments
-- Treat a stolen device as fully compromised
-- Do not use for critical high-security applications
+- Use only in physically secure environments; treat a stolen device as fully
+  compromised.
+- **Avoid storing irreplaceable, long-lived secrets (especially GPG private
+  keys)** — they cannot be protected on this hardware.
+- For real protection, derive the key from a typed passphrase and/or move to
+  hardware with a secure element. See `VULNERABILITY_ANALYSIS.md`.
 - Consider device as two-factor authentication complement (possession + sequence knowledge)
 - For critical applications: implement additional tamper detection or destruction mechanisms
 
@@ -429,7 +433,7 @@ Change hardware pins in `ESP-ProMicro-HidKey.ino`:
 **Runtime Processing:**
 1. Only the active secret is decrypted into SRAM
 2. Plaintext transmitted to USB
-3. Buffer immediately cleared via 3-pass overwrite
+3. Buffer immediately cleared via a barrier-protected `secureWipe()`
 
 ### Sequence Matching
 
