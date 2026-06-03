@@ -41,11 +41,10 @@ if [ -z "$BL_PORT" ]; then
 fi
 echo "Bootloader-Port: $BL_PORT — lese Flash ..."
 
-avrdude -v -c avr109 -p atmega32u4 -P "$BL_PORT" -b 57600 -U "flash:r:$OUT:r"
-RC=$?
-if [ $RC -eq 0 ]; then
+if avrdude -v -c avr109 -p atmega32u4 -P "$BL_PORT" -b 57600 -U "flash:r:$OUT:r"; then
     echo "Flash gespeichert: $OUT ($(wc -c < "$OUT") Bytes)"
 else
+    RC=$?
     echo "avrdude Fehlercode: $RC"
+    exit $RC
 fi
-exit $RC

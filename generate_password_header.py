@@ -184,7 +184,6 @@ def generate_header(combinations, aes_key, output_path):
         max_plaintext_len = max(max_plaintext_len, plaintext_len)
         max_encrypted_len = max(max_encrypted_len, encrypted_len)
 
-        comma = "," if idx < len(combinations) - 1 else ""
         seq_refs.append(
             "  { "
             f".sequence = seq_{idx}, "
@@ -193,7 +192,7 @@ def generate_header(combinations, aes_key, output_path):
             f".password_len = {encrypted_len}, "
             f".plaintext_len = {plaintext_len}, "
             f".content_type = 0x{comb['content_type']:02X} "
-            f"}}{comma}"
+            "},"
         )
     
     key_bytes = ', '.join(f'0x{int(aes_key[i:i+2], 16):02X}' for i in range(0, len(aes_key), 2))
