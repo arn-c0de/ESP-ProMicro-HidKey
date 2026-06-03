@@ -44,7 +44,8 @@ def is_printable(b):
 def main():
     key  = load_key()
     data = open(FLASH, "rb").read()
-    print(f"Flash: {len(data)} Bytes, Key: {key.hex().upper()}\n")
+    print("⚠️  This recovers plaintext secrets to dump/*.txt — delete them securely when done.")
+    print(f"Flash: {len(data)} Bytes\n")
 
     found = 0
     i = 0
@@ -57,7 +58,9 @@ def main():
                 if pt and len(pt) >= 4 and is_printable(pt):
                     found += 1
                     fname = os.path.join(OUT, f"secret_{found}_offset0x{i:04X}.txt")
-                    with open(fname, "wb") as f:
+                    # Plaintext secret on disk: create 0600 so it is not world-readable.
+                    fd = os.open(fname, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                    with os.fdopen(fd, "wb") as f:
                         f.write(pt)
                     preview = pt[:80].decode("latin-1").replace("\n", "↵")
                     print(f"[{found}] Offset 0x{i:04X}  {len(pt)} Bytes  →  dump/{os.path.basename(fname)}")

@@ -1,10 +1,17 @@
 #!/bin/bash
 # Flash-Dump via 1200-Baud-Trick + Caterina-Bootloader
+set -uo pipefail
 OUT="dump/flash.bin"
 mkdir -p dump
 
+# First matching /dev/ttyACM* (glob into an array; never parse `ls`).
+first_acm_port() {
+    local ports=(/dev/ttyACM*)
+    [ -e "${ports[0]}" ] && printf '%s\n' "${ports[0]}"
+}
+
 # Schritt 1: Firmware-Port finden
-FW_PORT=$(ls /dev/ttyACM* 2>/dev/null | head -1)
+FW_PORT=$(first_acm_port)
 if [ -z "$FW_PORT" ]; then
     echo "FEHLER: Kein /dev/ttyACM* gefunden. Gerät eingesteckt?"
     exit 1
@@ -23,7 +30,7 @@ done
 # Schritt 3: Neuen Port abwarten (Bootloader)
 BL_PORT=""
 for i in $(seq 1 60); do
-    BL_PORT=$(ls /dev/ttyACM* 2>/dev/null | head -1)
+    BL_PORT=$(first_acm_port)
     [ -n "$BL_PORT" ] && break
     sleep 0.1
 done
