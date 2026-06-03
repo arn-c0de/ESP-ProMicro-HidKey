@@ -15,8 +15,12 @@
 #ifndef SEQUENCE_TIMEOUT_MS
 #define SEQUENCE_TIMEOUT_MS 3000
 #endif
-#define TIMEOUT_MS SEQUENCE_TIMEOUT_MS
 #define MAX_SEQUENCE_LENGTH 20
+
+// Crypto/layout magic numbers
+#define HID_KEYCODE_OFFSET 136  // Keyboard.cpp: codes >= 136 are non-printing keys
+#define LATIN1_HIGH        0x80 // bytes >= this need DE-layout translation
+#define MIN_ENCRYPTED_LEN  17   // 1 flag byte + AES_BLOCKLEN IV, must be exceeded
 
 // EEPROM addresses
 #define EEPROM_FAILED_ATTEMPTS_ADDR 0  // Failed attempts: 1 byte
@@ -48,13 +52,22 @@ byte currentInput[MAX_SEQUENCE_LENGTH];
 // otherwise interpreted as raw HID usage codes and produce garbage.
 static bool useDeLayout = false;
 
+// Overwrite a buffer and prevent the compiler from eliding the wipe as a dead
+// store. The "memory" clobber is the load-bearing part (CERT C MSC06-C); avr-libc
+// has no explicit_bzero/memset_s, so we roll our own. SRAM has no remanence, so a
+// single pass is sufficient.
+static void secureWipe(void* buf, size_t len) {
+  memset(buf, 0, len);
+  asm volatile("" : : "r"(buf) : "memory");
+}
+
 // Press a raw HID usage code with optional Shift / AltGr modifiers and
-// release everything. Bypasses the _asciimap layout lookup by adding 136
-// (see Keyboard.cpp: values >= 136 are treated as non-printing keys).
+// release everything. Bypasses the _asciimap layout lookup by adding
+// HID_KEYCODE_OFFSET (see Keyboard.cpp: values >= 136 are non-printing keys).
 static void sendRawHidKey(uint8_t hid, bool shift, bool altGr) {
   if (shift)  Keyboard.press(0x81);          // KEY_LEFT_SHIFT
   if (altGr)  Keyboard.press(0x86);          // KEY_RIGHT_ALT (AltGr)
-  Keyboard.press((uint8_t)(hid + 136));
+  Keyboard.press((uint8_t)(hid + HID_KEYCODE_OFFSET));
   Keyboard.releaseAll();
   delay(4);
 }
@@ -90,6 +103,17 @@ void saveFailedAttempts() {
   EEPROM.write(EEPROM_FAILED_ATTEMPTS_ADDR, failedAttempts);
 }
 
+void resetFailedAttempts() {
+  failedAttempts = 0;
+  saveFailedAttempts();
+}
+
+// Discard the in-progress input sequence and clear its buffer.
+void resetSequence() {
+  currentSequenceIndex = 0;
+  memset(currentInput, 0, sizeof(currentInput));
+}
+
 bool decryptEntryFromProgmem(int entryIndex, byte* plaintextBuffer, int& plaintextLen, uint8_t& contentType) {
   if (entryIndex < 0 || entryIndex >= PASSWORD_ENTRY_COUNT) {
     return false;
@@ -98,74 +122,77 @@ bool decryptEntryFromProgmem(int entryIndex, byte* plaintextBuffer, int& plainte
   PasswordEntry entry;
   memcpy_P(&entry, &PASSWORD_ENTRIES[entryIndex], sizeof(PasswordEntry));
 
-  if (entry.password_len <= 17 || entry.password_len > MAX_ENCRYPTED_PASSWORD_LENGTH) {
+  if (entry.password_len <= MIN_ENCRYPTED_LEN || entry.password_len > MAX_ENCRYPTED_PASSWORD_LENGTH) {
     return false;
   }
 
+  // Sensitive buffers declared up front so the single fail: cleanup path can
+  // wipe them all (declared before any goto to satisfy C++ scoping rules).
   byte encryptedBuffer[MAX_ENCRYPTED_PASSWORD_LENGTH];
+  byte iv[AES_BLOCKLEN];
+  byte masterKey[AES_KEYLEN];
+  AES_ctx masterCtx;
+
   for (int i = 0; i < entry.password_len; i++) {
     encryptedBuffer[i] = pgm_read_byte(&entry.password[i]);
   }
 
   if (encryptedBuffer[0] != ENCRYPTION_STAGE_1) {
-    memset(encryptedBuffer, 0, sizeof(encryptedBuffer));
-    return false;
+    goto fail;
   }
 
-  byte iv[16];
   memcpy(iv, encryptedBuffer + 1, sizeof(iv));
 
   plaintextLen = entry.password_len - 1 - sizeof(iv);
+  // Defensive bounds before touching the plaintext buffer / CBC: a tampered or
+  // inconsistent header could otherwise overflow decBuffer (plaintextLen >
+  // MAX_PLAINTEXT_LENGTH) or make AES_CBC_decrypt read/write a partial block
+  // (plaintextLen not a multiple of AES_BLOCKLEN).
+  if (plaintextLen <= 0 || plaintextLen > MAX_PLAINTEXT_LENGTH ||
+      (plaintextLen % AES_BLOCKLEN) != 0) {
+    goto fail;
+  }
   memcpy(plaintextBuffer, encryptedBuffer + 1 + sizeof(iv), plaintextLen);
 
-  byte masterKey[16];
-  for (int i = 0; i < 16; i++) {
+  for (int i = 0; i < AES_KEYLEN; i++) {
     masterKey[i] = pgm_read_byte(&AES_MASTER_KEY[i]);
   }
 
-  AES_ctx masterCtx;
   AES_init_ctx(&masterCtx, masterKey);
   AES_CBC_decrypt(&masterCtx, iv, plaintextBuffer, plaintextLen);
 
   if (plaintextLen <= 0) {
-    memset(encryptedBuffer, 0, sizeof(encryptedBuffer));
-    memset(masterKey, 0, sizeof(masterKey));
-    memset(&masterCtx, 0, sizeof(masterCtx));
-    memset(iv, 0, sizeof(iv));
-    return false;
+    goto fail;
   }
 
-  byte paddingLen = plaintextBuffer[plaintextLen - 1];
-  if (paddingLen == 0 || paddingLen > 16 || paddingLen > plaintextLen) {
-    memset(encryptedBuffer, 0, sizeof(encryptedBuffer));
-    memset(masterKey, 0, sizeof(masterKey));
-    memset(&masterCtx, 0, sizeof(masterCtx));
-    memset(iv, 0, sizeof(iv));
-    memset(plaintextBuffer, 0, MAX_PLAINTEXT_LENGTH);
-    plaintextLen = 0;
-    return false;
-  }
-
-  for (int i = plaintextLen - paddingLen; i < plaintextLen; i++) {
-    if (plaintextBuffer[i] != paddingLen) {
-      memset(encryptedBuffer, 0, sizeof(encryptedBuffer));
-      memset(masterKey, 0, sizeof(masterKey));
-      memset(&masterCtx, 0, sizeof(masterCtx));
-      memset(iv, 0, sizeof(iv));
-      memset(plaintextBuffer, 0, MAX_PLAINTEXT_LENGTH);
-      plaintextLen = 0;
-      return false;
+  {
+    byte paddingLen = plaintextBuffer[plaintextLen - 1];
+    if (paddingLen == 0 || paddingLen > AES_BLOCKLEN || paddingLen > plaintextLen) {
+      goto fail;
     }
+    for (int i = plaintextLen - paddingLen; i < plaintextLen; i++) {
+      if (plaintextBuffer[i] != paddingLen) {
+        goto fail;
+      }
+    }
+    plaintextLen -= paddingLen;
   }
-
-  plaintextLen -= paddingLen;
   contentType = entry.content_type;
 
-  memset(encryptedBuffer, 0, sizeof(encryptedBuffer));
-  memset(masterKey, 0, sizeof(masterKey));
-  memset(&masterCtx, 0, sizeof(masterCtx));
-  memset(iv, 0, sizeof(iv));
+  secureWipe(encryptedBuffer, sizeof(encryptedBuffer));
+  secureWipe(masterKey, sizeof(masterKey));
+  secureWipe(&masterCtx, sizeof(masterCtx));
+  secureWipe(iv, sizeof(iv));
   return true;
+
+fail:
+  secureWipe(encryptedBuffer, sizeof(encryptedBuffer));
+  secureWipe(masterKey, sizeof(masterKey));
+  secureWipe(&masterCtx, sizeof(masterCtx));
+  secureWipe(iv, sizeof(iv));
+  secureWipe(plaintextBuffer, MAX_PLAINTEXT_LENGTH);
+  plaintextLen = 0;
+  return false;
 }
 
 void writeSecretByte(byte value) {
@@ -177,7 +204,7 @@ void writeSecretByte(byte value) {
     delay(8);
     return;
   }
-  if (value >= 0x80) {
+  if (value >= LATIN1_HIGH) {
     if (useDeLayout) {
       writeDeLatin1Extra(value);
     }
@@ -187,40 +214,19 @@ void writeSecretByte(byte value) {
 }
 
 // ==================== LED Feedback ====================
-void blinkSuccess(int times = 4) {
+static void blink(int times, int onMs, int offMs) {
   for (int i = 0; i < times; i++) {
     digitalWrite(LED_PIN, HIGH);
-    delay(100);
+    delay(onMs);
     digitalWrite(LED_PIN, LOW);
-    delay(100);
+    delay(offMs);
   }
 }
 
-void blinkFail() {
-  digitalWrite(LED_PIN, HIGH);
-  delay(2000);
-  digitalWrite(LED_PIN, LOW);
-}
-
-void blinkLockout() {
-  // Fast blinking indicates lockout
-  for (int i = 0; i < 10; i++) {
-    digitalWrite(LED_PIN, HIGH);
-    delay(50);
-    digitalWrite(LED_PIN, LOW);
-    delay(50);
-  }
-}
-
-void blinkReady() {
-  // 2x long blink: ready for new sequence
-  for (int i = 0; i < 2; i++) {
-    digitalWrite(LED_PIN, HIGH);
-    delay(500);
-    digitalWrite(LED_PIN, LOW);
-    delay(300);
-  }
-}
+void blinkSuccess(int times = 4) { blink(times, 100, 100); }    // short double-blinks
+void blinkFail()                 { blink(1, 2000, 0); }         // one long blink
+void blinkLockout()              { blink(10, 50, 50); }         // fast: lockout
+void blinkReady()                { blink(2, 500, 300); }        // 2x long: ready
 
 // ==================== Sequence Matching ====================
 /**
@@ -245,7 +251,8 @@ bool sequenceMatches(int entryIndex, int inputLength) {
     return false;
   }
 
-  // Constant-time comparison: always check all bytes to prevent timing attacks
+  // Accumulate-compare all bytes (constant-time at source level; note the PIN
+  // space here is tiny, so this is hardening, not a meaningful timing defense).
   byte mismatch = 0;
   for (int i = 0; i < seqLen; i++) {
     byte expectedByte = pgm_read_byte(&entry.sequence[i]);
@@ -281,9 +288,15 @@ void executePassword(int entryIndex) {
   byte decBuffer[MAX_PLAINTEXT_LENGTH];
   int plaintextLen = 0;
   uint8_t contentType = CONTENT_TYPE_TEXT;
+  // A recognized sequence is a legitimate user, so the brute-force counter is
+  // reset whether or not decryption then succeeds (guarded to avoid EEPROM wear).
+  if (failedAttempts > 0) {
+    resetFailedAttempts();
+  }
+
   if (!decryptEntryFromProgmem(entryIndex, decBuffer, plaintextLen, contentType)) {
     blinkFail();
-    memset(decBuffer, 0, sizeof(decBuffer));
+    secureWipe(decBuffer, sizeof(decBuffer));
     return;
   }
 
@@ -302,18 +315,10 @@ void executePassword(int entryIndex) {
   }
   Keyboard.end();
 
-  // Security: Multi-pass clear
-  memset(decBuffer, 0xFF, sizeof(decBuffer));
-  memset(decBuffer, 0xAA, sizeof(decBuffer));
-  memset(decBuffer, 0x00, sizeof(decBuffer));
+  // Wipe the plaintext from the stack (single pass; SRAM has no remanence).
+  secureWipe(decBuffer, sizeof(decBuffer));
 
   blinkSuccess();
-  
-  // Reset brute-force counter on success
-  if (failedAttempts > 0) {
-    failedAttempts = 0;
-    saveFailedAttempts();
-  }
 }
 
 /**
@@ -323,18 +328,15 @@ void executePassword(int entryIndex) {
 void processButtonPress(int pressType) {
   // Check if buffer is full BEFORE writing
   if (currentSequenceIndex >= MAX_SEQUENCE_LENGTH) {
-    // Buffer full, discard and restart
-    currentSequenceIndex = 0;
-    memset(currentInput, 0, sizeof(currentInput));
+    resetSequence();  // Buffer full, discard and restart
   }
 
   currentInput[currentSequenceIndex] = pressType;
   currentSequenceIndex++;
   lastAction = millis();
   sequenceRecognized = false;  // Reset recognition flag when new input arrives
-  
-  // Just collect the button press - don't check yet
-  // Recognition will happen 3 seconds after last press
+
+  // Just collect the button press - recognition happens after SEQUENCE_TIMEOUT_MS.
 }
 
 // ==================== Setup & Main Loop ====================
@@ -350,14 +352,16 @@ void setup() {
 
   initializeStateStorage();
 
-  // Load failed attempts from EEPROM
+  // Load failed attempts from EEPROM. An out-of-range value means the counter
+  // byte is corrupt/uninitialized; fail CLOSED by treating it as "at the limit"
+  // so a corrupted cell enters lockout instead of silently clearing it.
   failedAttempts = EEPROM.read(EEPROM_FAILED_ATTEMPTS_ADDR);
   if (failedAttempts > MAX_FAILED_ATTEMPTS) {
-    failedAttempts = 0;
+    failedAttempts = MAX_FAILED_ATTEMPTS;
     saveFailedAttempts();
   }
-  
-  currentSequenceIndex = 0;
+
+  resetSequence();
   lastAction = millis();
   
   // Check if we're starting in lockout state
@@ -379,8 +383,7 @@ void loop() {
     if ((unsigned long)(now - lockoutStart) >= LOCKOUT_MS) {
       // End lockout
       isLockedOut = false;
-      failedAttempts = 0;
-      saveFailedAttempts();
+      resetFailedAttempts();
       blinkSuccess(2);  // Short signal: ready again
     } else {
       // Still locked - ignore inputs
@@ -389,19 +392,16 @@ void loop() {
     }
   }
 
-  // Check for sequence recognition: if 3 seconds pass without button press, try to recognize
+  // Try to recognize the sequence after SEQUENCE_TIMEOUT_MS of inactivity.
   if (currentSequenceIndex > 0 && !sequenceRecognized) {
     unsigned long inactiveDuration = (unsigned long)(now - lastAction);
-    if (inactiveDuration >= TIMEOUT_MS) {
-      // 3 seconds of inactivity - try to recognize the sequence
+    if (inactiveDuration >= SEQUENCE_TIMEOUT_MS) {
       sequenceRecognized = true;
-      
+
       int matchIndex = findMatchingPassword(currentSequenceIndex);
       if (matchIndex >= 0) {
-        // Match found!
+        // Match found! executePassword() already resets failedAttempts.
         executePassword(matchIndex);
-        failedAttempts = 0;
-        saveFailedAttempts();
       } else {
         // No match - wrong sequence
         failedAttempts++;
@@ -415,10 +415,8 @@ void loop() {
           blinkReady();
         }
       }
-      
-      // Reset for next sequence
-      currentSequenceIndex = 0;
-      memset(currentInput, 0, sizeof(currentInput));
+
+      resetSequence();
     }
   }
 

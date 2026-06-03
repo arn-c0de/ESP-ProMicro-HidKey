@@ -2,9 +2,9 @@ name: "CodeQL"
 
 on:
   push:
-    branches: [ "2.0.1", "main", "master" ]
+    branches: [ "main", "master", "2.0.*" ]
   pull_request:
-    branches: [ "2.0.1", "main", "master" ]
+    branches: [ "main", "master", "2.0.*" ]
   schedule:
     - cron: '25 14 * * 1'
 
@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   analyze:
-    name: Analyze Python
+    name: Analyze (${{ matrix.language }})
     runs-on: ubuntu-latest
     timeout-minutes: 360
     permissions:
@@ -22,6 +22,15 @@ jobs:
       actions: read
       contents: read
 
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: python
+            build-mode: none
+          - language: c-cpp
+            build-mode: manual
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -29,37 +38,37 @@ jobs:
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
         with:
-          languages: python
-          build-mode: none
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      # For c-cpp, CodeQL traces a real compile. Build the firmware with
+      # arduino-cli so the .ino + aes.h are extracted and analyzed.
+      - name: Set up Arduino CLI
+        if: matrix.language == 'c-cpp'
+        uses: arduino/setup-arduino-cli@v2
+        with:
+          version: 0.35.3
+
+      - name: Build firmware (c-cpp, traced by CodeQL)
+        if: matrix.language == 'c-cpp'
+        run: |
+          arduino-cli core install arduino:avr@1.8.6
+          arduino-cli lib install Keyboard
+          pip install -r requirements.txt
+          # Minimal self-contained .env (no external GPG file) so the build is
+          # reproducible in CI and only exercises text-secret encryption.
+          cat > .env <<'ENV'
+          AES_MASTER_KEY=0123456789ABCDEF0123456789ABCDEF
+          COMBINATION_COUNT=1
+          COMBINATION_0_SEQUENCE=0,1,0
+          COMBINATION_0_TYPE=text
+          COMBINATION_0_PASSWORD=ci_dummy_secret
+          SEQUENCE_TIMEOUT_MS=2000
+          ENV
+          python generate_password_header.py
+          arduino-cli compile --fqbn arduino:avr:leonardo ESP-ProMicro-HidKey.ino
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
         with:
-          category: "/language:python"
-
-  build-arduino:
-    name: Build Arduino
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Arduino CLI
-        uses: arduino/setup-arduino-cli@v2
-
-      - name: Install board and libraries
-        run: |
-          arduino-cli core install arduino:avr
-          arduino-cli lib install Keyboard
-
-      - name: Generate test passwords header
-        run: |
-          cp .env.example .env
-          pip install pycryptodomex
-          python generate_password_header.py
-
-      - name: Compile sketch
-        run: |
-          arduino-cli compile --fqbn arduino:avr:leonardo ESP-ProMicro-HidKey.ino
+          category: "/language:${{ matrix.language }}"

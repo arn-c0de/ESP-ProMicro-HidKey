@@ -97,42 +97,11 @@ static void AddRoundKey(uint8_t round, uint8_t* state, const uint8_t* RoundKey) 
   }
 }
 
-// Helper: SubBytes using S-box
-static void SubBytes(uint8_t* state) {
-  for (uint8_t i = 0; i < 16; ++i) {
-    state[i] = getSBoxValue(state[i]);
-  }
-}
-
 // Helper: InvSubBytes using inverse S-box
 static void InvSubBytes(uint8_t* state) {
   for (uint8_t i = 0; i < 16; ++i) {
     state[i] = getSBoxInvert(state[i]);
   }
-}
-
-// Helper: ShiftRows
-static void ShiftRows(uint8_t* state) {
-  uint8_t temp;
-  // Row 1: shift left by 1
-  temp = state[1];
-  state[1] = state[5];
-  state[5] = state[9];
-  state[9] = state[13];
-  state[13] = temp;
-  // Row 2: shift left by 2
-  temp = state[2];
-  state[2] = state[10];
-  state[10] = temp;
-  temp = state[6];
-  state[6] = state[14];
-  state[14] = temp;
-  // Row 3: shift left by 3
-  temp = state[3];
-  state[3] = state[15];
-  state[15] = state[11];
-  state[11] = state[7];
-  state[7] = temp;
 }
 
 // Helper: InvShiftRows
@@ -162,20 +131,6 @@ static void InvShiftRows(uint8_t* state) {
 // Helper: xtime (multiply by 2 in GF(2^8))
 static uint8_t xtime(uint8_t x) {
   return ((x << 1) ^ (((x >> 7) & 1) * 0x1b));
-}
-
-// Helper: MixColumns
-static void MixColumns(uint8_t* state) {
-  uint8_t i;
-  uint8_t Tmp, Tm, t;
-  for (i = 0; i < 16; i += 4) {
-    t = state[i];
-    Tmp = state[i] ^ state[i + 1] ^ state[i + 2] ^ state[i + 3];
-    Tm = state[i] ^ state[i + 1]; Tm = xtime(Tm); state[i] ^= Tm ^ Tmp;
-    Tm = state[i + 1] ^ state[i + 2]; Tm = xtime(Tm); state[i + 1] ^= Tm ^ Tmp;
-    Tm = state[i + 2] ^ state[i + 3]; Tm = xtime(Tm); state[i + 2] ^= Tm ^ Tmp;
-    Tm = state[i + 3] ^ t; Tm = xtime(Tm); state[i + 3] ^= Tm ^ Tmp;
-  }
 }
 
 // Helper: Multiply in GF(2^8)

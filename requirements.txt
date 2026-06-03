@@ -1,0 +1,9 @@
+# Pinned build-time Python dependencies.
+#
+# NOTE: the import namespace used by this project is `Cryptodome`, which is
+# provided by the `pycryptodomex` distribution below — NOT by `pycryptodome`
+# (that one imports as `Crypto`). Do NOT `pip install Cryptodome`: the bare
+# `Cryptodome` name on PyPI is not the canonical package.
+#
+# Install with:  pip install -r requirements.txt
+pycryptodomex==3.20.0
