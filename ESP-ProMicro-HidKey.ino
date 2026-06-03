@@ -144,6 +144,14 @@ bool decryptEntryFromProgmem(int entryIndex, byte* plaintextBuffer, int& plainte
   memcpy(iv, encryptedBuffer + 1, sizeof(iv));
 
   plaintextLen = entry.password_len - 1 - sizeof(iv);
+  // Defensive bounds before touching the plaintext buffer / CBC: a tampered or
+  // inconsistent header could otherwise overflow decBuffer (plaintextLen >
+  // MAX_PLAINTEXT_LENGTH) or make AES_CBC_decrypt read/write a partial block
+  // (plaintextLen not a multiple of AES_BLOCKLEN).
+  if (plaintextLen <= 0 || plaintextLen > MAX_PLAINTEXT_LENGTH ||
+      (plaintextLen % AES_BLOCKLEN) != 0) {
+    goto fail;
+  }
   memcpy(plaintextBuffer, encryptedBuffer + 1 + sizeof(iv), plaintextLen);
 
   for (int i = 0; i < AES_KEYLEN; i++) {
@@ -344,10 +352,13 @@ void setup() {
 
   initializeStateStorage();
 
-  // Load failed attempts from EEPROM
+  // Load failed attempts from EEPROM. An out-of-range value means the counter
+  // byte is corrupt/uninitialized; fail CLOSED by treating it as "at the limit"
+  // so a corrupted cell enters lockout instead of silently clearing it.
   failedAttempts = EEPROM.read(EEPROM_FAILED_ATTEMPTS_ADDR);
   if (failedAttempts > MAX_FAILED_ATTEMPTS) {
-    resetFailedAttempts();
+    failedAttempts = MAX_FAILED_ATTEMPTS;
+    saveFailedAttempts();
   }
 
   resetSequence();
